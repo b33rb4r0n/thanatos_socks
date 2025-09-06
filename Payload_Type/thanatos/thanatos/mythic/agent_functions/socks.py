@@ -1,4 +1,5 @@
-#POC by Gerar heavily based in medusa
+# POC by Gerar heavily based on medusa 
+
 from mythic_container.MythicCommandBase import (
     CommandBase,
     CommandAttributes,
@@ -11,6 +12,8 @@ from mythic_container.MythicCommandBase import (
     PTTaskProcessResponseMessageResponse,
     SupportedOS,
 )
+
+from mythic_container.RPC import SendMythicRPCProxyStartCommand
 
 
 class SocksArguments(TaskArguments):
@@ -66,9 +69,14 @@ class SocksCommand(CommandBase):
     async def create_tasking(self, task: MythicTask) -> MythicTask:
         port = task.args.get_arg("port")
         task.display_params = f"Start SOCKS5 proxy on port {port}"
+
+        # Inform Mythic to start proxying `socks_in` / `socks_out` for this agent
+        await SendMythicRPCProxyStartCommand(agent_task_id=task.id)
+
         return task
 
     async def process_response(
         self, task: PTTaskMessageAllData, response: str
     ) -> PTTaskProcessResponseMessageResponse:
+        # Placeholder for future result processing
         return PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
