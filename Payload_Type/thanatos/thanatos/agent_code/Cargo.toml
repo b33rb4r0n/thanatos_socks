@@ -42,7 +42,14 @@ features = ["vendored-openssl"]
 
 [dependencies.tokio]
 version = "1.16.1"
-features = ["net", "rt-multi-thread", "io-util", "macros", "process"]
+features = [
+  "net",
+  "rt-multi-thread",
+  "io-util",
+  "macros",
+  "process",
+  "time"  #new one for socks
+]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
