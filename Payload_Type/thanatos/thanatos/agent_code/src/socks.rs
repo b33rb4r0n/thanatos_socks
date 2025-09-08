@@ -148,11 +148,12 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
 
 /* ----------- Extract socks messages from continued_task.parameters --------- */
 
+
 /// Try to extract a SOCKS packet (server_id, data, exit) from an arbitrary Value.
-/// Supports two shapes:
+/// Supports:
 /// 1) Top-level socks packet: {"server_id": "...", "data": "...", "exit": bool}
-/// 2) AgentTask with JSON-string parameters containing the socks packet:
-///    {"command":"continued_task", "parameters":"{\"server_id\":\"...\",\"data\":\"...\",\"exit\":false}"}
+/// 2) AgentTask continued_task whose `parameters` is a JSON string/object containing the same.
+/// Returns Ok(None) for non-SOCKS envelopes (e.g., Mythic acks: status/chunk_*).
 fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Box<dyn Error>> {
     // Case 1: top-level
     if let Some(sid) = msg.get("server_id").and_then(|v| v.as_str()) {
@@ -160,42 +161,48 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
         return Ok(Some((sid.to_string(), exit, msg.clone())));
     }
 
-    // Case 2: AgentTask continued_task
-    if let Some(cmd) = msg.get("command").and_then(|v| v.as_str()) {
-        if cmd.eq_ignore_ascii_case("continued_task") {
-            if let Some(params_str) = msg.get("parameters").and_then(|v| v.as_str()) {
-                // parameters is a JSON-encoded string; parse it
-                match serde_json::from_str::<Value>(params_str) {
-                    Ok(inner) => {
-                        if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
-                            let exit = inner.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
-                            return Ok(Some((sid.to_string(), exit, inner)));
-                        } else {
-                            // Could be a different nesting, log a tiny preview
-                            return Err(format!(
-                                "parsed parameters but no server_id. keys={:?}",
-                                inner.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
-                            )
-                            .into());
-                        }
-                    }
-                    Err(e) => {
-                        return Err(format!(
-                            "failed to parse parameters as JSON: err={e}; preview={}",
-                            str_preview(params_str, 200)
-                        )
-                        .into());
+    // Case 2: continued_task with JSON in `parameters`
+    if msg.get("command").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("continued_task")).unwrap_or(false) {
+        // parameters can be a JSON string or already an object (handle both)
+        if let Some(params_val) = msg.get("parameters") {
+            let inner: Value = match params_val {
+                Value::String(s) => {
+                    // Try JSON-parse the string; if it isn't JSON, skip
+                    match serde_json::from_str::<Value>(s) {
+                        Ok(v) => v,
+                        Err(_) => return Ok(None),
                     }
                 }
-            } else {
-                return Err("continued_task missing parameters string".into());
+                // Sometimes backends pass it through already parsed
+                v @ Value::Object(_) => v.clone(),
+                _ => return Ok(None),
+            };
+
+            // Mythic acks often look like: { "task_id", "status", "error", "file_id", "total_chunks", "chunk_num", "chunk_data" }
+            // Skip those quietly.
+            let looks_like_ack = inner.get("status").is_some() && inner.get("task_id").is_some();
+            if looks_like_ack {
+                return Ok(None);
             }
+
+            // True SOCKS packet?
+            if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
+                let exit = inner.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
+                // require at least a data field (may be "")
+                if inner.get("data").is_some() {
+                    return Ok(Some((sid.to_string(), exit, inner)));
+                }
+            }
+
+            // Not a SOCKS shape we understand; skip silently.
+            return Ok(None);
         }
     }
 
-    // Not a socks message we understand
+    // Not SOCKS-related
     Ok(None)
 }
+
 
 /* ----------------------------- Session handler ---------------------------- */
 
