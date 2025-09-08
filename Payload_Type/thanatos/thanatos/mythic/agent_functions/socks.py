@@ -1,4 +1,4 @@
-# POC by Gerar heavily based on medusa 
+# POC by Gerar heavily based on medusa and apollo
 
 from mythic_container.MythicCommandBase import (
     CommandBase,
@@ -13,10 +13,10 @@ from mythic_container.MythicCommandBase import (
     SupportedOS,
 )
 
-from mythic_container.MythicRPC import SendMythicRPCProxyStart, MythicRPC
-
-from mythic_container.MythicRPC import SendMythicRPCProxyStart, MythicRPC
-
+from mythic_container.MythicRPC import (
+    SendMythicRPCProxyStartCommand,
+    MythicRPCProxyStartMessage,
+)
 
 class SocksArguments(TaskArguments):
     def __init__(self, command_line, **kwargs):
@@ -30,6 +30,7 @@ class SocksArguments(TaskArguments):
                 default_value=1080,
                 parameter_group_info=[ParameterGroupInfo(required=True, ui_position=1)],
             ),
+
         ]
 
     async def parse_arguments(self):
@@ -53,7 +54,7 @@ class SocksCommand(CommandBase):
     needs_admin = False
     help_cmd = "socks [port]"
     description = "Start a SOCKS5 proxy listener on the Mythic server that forwards through this agent"
-    version = 2
+    version = 3
     author = "@RedTeamGPT"
     argument_class = SocksArguments
     attackmapping = ["T1090"]
@@ -63,44 +64,32 @@ class SocksCommand(CommandBase):
 
     async def create_tasking(self, task: MythicTask) -> MythicTask:
         port = int(task.args.get_arg("port"))
+        task.display_params = f"SOCKS5 via Mythic on port {port}"
 
-        # Ask Mythic to open a SOCKS port and wire it to this task/callback.
-        # For SOCKS: PortType="socks"; only LocalPort matters.
-        # LocalPort can be 0 to auto-pick an available port (3.1+).
-        actual_port = port
-        try:
-            resp = await SendMythicRPCProxyStart(
+        # If you later add auth params:
+        # username = task.args.get_arg("username") or ""
+        # password = task.args.get_arg("password") or ""
+
+        # Start the proxy (Command-style API)
+        resp = await SendMythicRPCProxyStartCommand(
+            MythicRPCProxyStartMessage(
                 TaskID=task.id,
-                LocalPort=port,
                 PortType="socks",
+                LocalPort=port,
+                # Username=username,
+                # Password=password,
             )
-            # Some versions return attributes, some a dict-like
-            # Try to capture the real bound port if Mythic auto-assigned it
-            if hasattr(resp, "Success") and getattr(resp, "Success"):
-                actual_port = getattr(resp, "LocalPort", port)
-            elif isinstance(resp, dict) and resp.get("success", resp.get("Status", False)):
-                actual_port = resp.get("local_port", port)
-        except TypeError:
-            # Rare older wrapper signature difference (snake_case kwargs)
-            resp = await SendMythicRPCProxyStart(
-                task_id=task.id, local_port=port, port_type="socks"
-            )
-            if isinstance(resp, dict) and resp.get("success"):
-                actual_port = resp.get("local_port", port)
-        except Exception as e:
-            # Fallback to fully dynamic interface if helper isn’t present
-            _ = await MythicRPC().execute(
-                "proxy_start",
-                task_id=task.id,
-                local_port=port,
-                port_type="socks",
-            )
-
-        task.display_params = (
-            f"SOCKS5 via Mythic on port {actual_port} (PortType=socks)"
-            if actual_port != port
-            else f"SOCKS5 via Mythic on port {port}"
         )
+
+        if not getattr(resp, "Success", False):
+            # Surface the error in the task UI
+            task.status = "error"
+            task.stderr = getattr(resp, "Error", "Failed to start SOCKS proxy")
+        else:
+            # If Mythic auto-assigned a port (LocalPort=0), show it
+            actual = getattr(resp, "LocalPort", port)
+            task.display_params = f"SOCKS5 via Mythic on port {actual}"
+
         return task
 
     async def process_response(
