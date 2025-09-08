@@ -445,9 +445,10 @@ pub fn handle_socks(
 }
 
 /// Back-compat for existing call site in tasking.rs
+/// Back-compat for existing call site in tasking.rs
 pub fn setup_socks(
-    tx: &std_mpsc::Sender.Value,
-    rx: std_mpsc::Receiver<Value>,
+    tx: &std_mpsc::Sender<serde_json::Value>,
+    rx: std_mpsc::Receiver<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
     handle_socks(tx, rx)
 }
