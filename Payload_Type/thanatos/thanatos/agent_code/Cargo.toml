@@ -41,7 +41,6 @@ version = "0.9.3"
 features = ["vendored-openssl"]
 
 [dependencies.tokio]
-[dependencies.tokio]
 version = "1.47.1"            # upgrade from 1.16.1
 features = [
   "net",
