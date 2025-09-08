@@ -41,14 +41,16 @@ version = "0.9.3"
 features = ["vendored-openssl"]
 
 [dependencies.tokio]
-version = "1.16.1"
+[dependencies.tokio]
+version = "1.47.1"            # upgrade from 1.16.1
 features = [
   "net",
   "rt-multi-thread",
   "io-util",
   "macros",
   "process",
-  "time"  #new one for socks
+  "time",
+  "sync"                     
 ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
