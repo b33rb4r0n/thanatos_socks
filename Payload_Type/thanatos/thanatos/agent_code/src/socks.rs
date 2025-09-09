@@ -479,28 +479,68 @@ pub fn handle_socks(
     ))?;
 
     // Puente std::mpsc -> tokio::mpsc
+    // Bridge std::mpsc -> tokio::mpsc
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
     {
         let parent_id = task.id.clone();
         let tx_clone = tx.clone();
         std::thread::spawn(move || {
-            debug_to_mythic(
-                &tx_clone,
-                &parent_id,
-                "SOCKS bridge spawn",
-                "blocking→async bridge started",
-            );
+            debug_to_mythic(&tx_clone, &parent_id, "SOCKS bridge spawn", "blocking→async bridge started");
+    
             while let Ok(v) = rx.recv() {
-                let _ = bridge_tx.send(v);
+                // 1) Top-level "socks" array from Mythic get_tasking/post_response
+                if let Some(arr) = v.get("socks").and_then(|x| x.as_array()) {
+                    for item in arr {
+                        let _ = bridge_tx.send(item.clone());
+                    }
+                    continue;
+                }
+    
+                // 2) Sometimes SOCKS comes nested inside `parameters` (stringified JSON or object)
+                if let Some(params_val) = v.get("parameters") {
+                    let inner: Value = match params_val {
+                        Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
+                        v @ Value::Object(_) => v.clone(),
+                        _ => Value::Null,
+                    };
+    
+                    // 2a) Nested "socks" array
+                    if let Some(arr) = inner.get("socks").and_then(|x| x.as_array()) {
+                        for item in arr {
+                            let _ = bridge_tx.send(item.clone());
+                        }
+                        continue;
+                    }
+    
+                    // 2b) Single SOCKS packet embedded
+                    let looks_like_packet =
+                        inner.get("server_id").is_some() &&
+                        (inner.get("data").is_some() || inner.get("chunk_data").is_some());
+    
+                    if looks_like_packet {
+                        let _ = bridge_tx.send(inner);
+                        continue;
+                    }
+                }
+    
+                // 3) Already looks like a single SOCKS packet at top-level
+                let looks_like_packet =
+                    v.get("server_id").is_some() &&
+                    (v.get("data").is_some() || v.get("chunk_data").is_some());
+    
+                if looks_like_packet {
+                    let _ = bridge_tx.send(v);
+                    continue;
+                }
+    
+                // 4) Not SOCKS-related -> optional: keep your skip logs in dispatcher
+                // (Don't forward; otherwise you flood the dispatcher with acks)
             }
-            debug_to_mythic(
-                &tx_clone,
-                &parent_id,
-                "SOCKS bridge ended",
-                "blocking receiver closed",
-            );
+    
+            debug_to_mythic(&tx_clone, &parent_id, "SOCKS bridge ended", "blocking receiver closed");
         });
     }
+
 
     // Runtime y dispatcher
     let rt = tokio::runtime::Runtime::new()?;
