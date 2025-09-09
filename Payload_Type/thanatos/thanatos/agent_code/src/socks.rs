@@ -149,57 +149,60 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
 /* ----------- Extract socks messages from continued_task.parameters --------- */
 
 
-/// Try to extract a SOCKS packet (server_id, data, exit) from an arbitrary Value.
-/// Supports:
-/// 1) Top-level socks packet: {"server_id": "...", "data": "...", "exit": bool}
-/// 2) AgentTask continued_task whose `parameters` is a JSON string/object containing the same.
-/// Returns Ok(None) for non-SOCKS envelopes (e.g., Mythic acks: status/chunk_*).
 fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Box<dyn Error>> {
-    // Case 1: top-level
+    // Caso 1: top-level
     if let Some(sid) = msg.get("server_id").and_then(|v| v.as_str()) {
         let exit = msg.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
         return Ok(Some((sid.to_string(), exit, msg.clone())));
     }
 
-    // Case 2: continued_task with JSON in `parameters`
-    if msg.get("command").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case("continued_task")).unwrap_or(false) {
-        // parameters can be a JSON string or already an object (handle both)
-        if let Some(params_val) = msg.get("parameters") {
-            let inner: Value = match params_val {
-                Value::String(s) => {
-                    // Try JSON-parse the string; if it isn't JSON, skip
-                    match serde_json::from_str::<Value>(s) {
-                        Ok(v) => v,
-                        Err(_) => return Ok(None),
-                    }
-                }
-                // Sometimes backends pass it through already parsed
-                v @ Value::Object(_) => v.clone(),
-                _ => return Ok(None),
-            };
+    // Caso 2: `parameters` (independientemente de `command`)
+    if let Some(params_val) = msg.get("parameters") {
+        // Parsear string JSON o clonar objeto
+        let mut inner: Value = match params_val {
+            Value::String(s) => match serde_json::from_str::<Value>(s) {
+                Ok(v) => v,
+                Err(_) => return Ok(None),
+            },
+            v @ Value::Object(_) => v.clone(),
+            _ => return Ok(None),
+        };
 
-            // Mythic acks often look like: { "task_id", "status", "error", "file_id", "total_chunks", "chunk_num", "chunk_data" }
-            // Skip those quietly.
-            let looks_like_ack = inner.get("status").is_some() && inner.get("task_id").is_some();
-            if looks_like_ack {
-                return Ok(None);
+        // Algunos backends meten el payload real bajo `message`
+        if let Some(v) = inner.get("message") {
+            if v.is_object() {
+                inner = v.clone();
             }
-
-            // True SOCKS packet?
-            if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
-                let exit = inner.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
-                // require at least a data field (may be "")
-                if inner.get("data").is_some() {
-                    return Ok(Some((sid.to_string(), exit, inner)));
-                }
-            }
-
-            // Not a SOCKS shape we understand; skip silently.
-            return Ok(None);
         }
+
+        // Detectar server_id
+        if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
+            // `data` puede venir como `data` o `chunk_data`
+            let data_b64 = inner
+                .get("data")
+                .or_else(|| inner.get("chunk_data"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // `exit` puede venir como `exit` o `close`
+            let exit = inner
+                .get("exit")
+                .and_then(|v| v.as_bool())
+                .or_else(|| inner.get("close").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+
+            let normalized = json!({
+                "server_id": sid,
+                "data": data_b64,
+                "exit": exit,
+            });
+            return Ok(Some((sid.to_string(), exit, normalized)));
+        }
+
+        // Si no hay `server_id`, no es tráfico SOCKS para nosotros
+        return Ok(None);
     }
 
-    // Not SOCKS-related
     Ok(None)
 }
 
