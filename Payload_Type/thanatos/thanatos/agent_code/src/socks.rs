@@ -149,62 +149,100 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
 /* ----------- Extract socks messages from continued_task.parameters --------- */
 
 
+fn as_string_or_number(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(n) = v.as_u64() {
+        return Some(n.to_string());
+    }
+    if let Some(n) = v.as_i64() {
+        return Some(n.to_string());
+    }
+    if let Some(n) = v.as_f64() {
+        // Mythic shouldn't send floats, but be defensive
+        return Some(format!("{}", n as i64));
+    }
+    None
+}
+
+/// Extract a SOCKS packet (server_id, exit, normalized JSON) from a Mythic message.
+/// Accepts:
+/// 1) Top-level: {"server_id": "...|123", "data"|"chunk_data": "...", "exit"|"close": bool}
+/// 2) Inside `parameters` (stringified JSON or object), optionally nested under `message`.
 fn extract_socks_packet(msg: &Value) -> Result<Option<(String, bool, Value)>, Box<dyn Error>> {
-    // Caso 1: top-level
-    if let Some(sid) = msg.get("server_id").and_then(|v| v.as_str()) {
-        let exit = msg.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
-        return Ok(Some((sid.to_string(), exit, msg.clone())));
+    // Case 1: top-level packet
+    if let Some(sidv) = msg.get("server_id") {
+        if let Some(server_id) = as_string_or_number(sidv) {
+            let exit = msg.get("exit")
+                .and_then(|v| v.as_bool())
+                .or_else(|| msg.get("close").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+
+            let data_b64 = msg.get("data")
+                .or_else(|| msg.get("chunk_data"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let normalized = json!({
+                "server_id": server_id,
+                "data": data_b64,
+                "exit": exit
+            });
+            return Ok(Some((normalized["server_id"].as_str().unwrap().to_string(), exit, normalized)));
+        }
     }
 
-    // Caso 2: `parameters` (independientemente de `command`)
+    // Case 2: parameters (independent of `command`)
     if let Some(params_val) = msg.get("parameters") {
-        // Parsear string JSON o clonar objeto
+        // Parse stringified JSON or clone object
         let mut inner: Value = match params_val {
-            Value::String(s) => match serde_json::from_str::<Value>(s) {
-                Ok(v) => v,
-                Err(_) => return Ok(None),
-            },
+            Value::String(s) => {
+                // It’s a JSON string (your logs show starts_with_brace=true)
+                match serde_json::from_str::<Value>(s) {
+                    Ok(v) => v,
+                    Err(_) => return Ok(None),
+                }
+            }
             v @ Value::Object(_) => v.clone(),
             _ => return Ok(None),
         };
 
-        // Algunos backends meten el payload real bajo `message`
+        // Some backends wrap the actual content under "message"
         if let Some(v) = inner.get("message") {
             if v.is_object() {
                 inner = v.clone();
             }
         }
 
-        // Detectar server_id
-        if let Some(sid) = inner.get("server_id").and_then(|v| v.as_str()) {
-            // `data` puede venir como `data` o `chunk_data`
-            let data_b64 = inner
-                .get("data")
-                .or_else(|| inner.get("chunk_data"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+        // Accept server_id as string or number
+        let server_id = match inner.get("server_id").and_then(|v| as_string_or_number(v)) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
 
-            // `exit` puede venir como `exit` o `close`
-            let exit = inner
-                .get("exit")
-                .and_then(|v| v.as_bool())
-                .or_else(|| inner.get("close").and_then(|v| v.as_bool()))
-                .unwrap_or(false);
+        // Normalize fields
+        let data_b64 = inner.get("data")
+            .or_else(|| inner.get("chunk_data"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-            let normalized = json!({
-                "server_id": sid,
-                "data": data_b64,
-                "exit": exit,
-            });
-            return Ok(Some((sid.to_string(), exit, normalized)));
-        }
+        let exit = inner.get("exit")
+            .and_then(|v| v.as_bool())
+            .or_else(|| inner.get("close").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
 
-        // Si no hay `server_id`, no es tráfico SOCKS para nosotros
-        return Ok(None);
+        let normalized = json!({
+            "server_id": server_id,
+            "data": data_b64,
+            "exit": exit
+        });
+        return Ok(Some((normalized["server_id"].as_str().unwrap().to_string(), exit, normalized)));
     }
 
     Ok(None)
 }
+
 
 
 /* ----------------------------- Session handler ---------------------------- */
@@ -526,6 +564,14 @@ pub fn handle_socks(
                 Ok(None) => {
                     non_socks_seen += 1;
                     if non_socks_seen <= 5 || non_socks_seen % 100 == 0 {
+                
+                        if let Some(Value::String(s)) = raw_msg.get("parameters") {
+                            debug_to_mythic(&tx, &parent_task_id, "parameters.peek", str_preview(s, 250));
+                        } else if let Some(p) = raw_msg.get("parameters") {
+                            // Por si `parameters` ya viene como objeto y no string
+                            debug_to_mythic(&tx, &parent_task_id, "parameters.peek", format!("{p:?}"));
+                        }
+                
                         // Resumen de claves top-level
                         let keys_top: Vec<String> = raw_msg
                             .as_object()
@@ -535,7 +581,7 @@ pub fn handle_socks(
                                 v
                             })
                             .unwrap_or_default();
-
+                
                         // Resumen de `parameters` sin closures anidados
                         let params_preview: String = if let Some(p) = raw_msg.get("parameters") {
                             match p {
@@ -553,7 +599,7 @@ pub fn handle_socks(
                         } else {
                             "<none>".to_string()
                         };
-
+                
                         debug_to_mythic(
                             &tx,
                             &parent_task_id,
@@ -564,6 +610,7 @@ pub fn handle_socks(
                         );
                     }
                 }
+
 
                 // Paquete inesperado
                 Err(e) => {
