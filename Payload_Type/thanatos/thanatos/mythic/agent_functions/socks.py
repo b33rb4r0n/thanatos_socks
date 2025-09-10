@@ -19,7 +19,7 @@ async def _dbg(task_id: str, msg: str):
     )
 
 
-def _mask(s: Optional[str]) -> str:
+def _mask(s: str | None) -> str:
     if not s:
         return "(none)"
     return "*" * 8
