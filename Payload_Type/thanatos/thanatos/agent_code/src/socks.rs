@@ -562,9 +562,10 @@ async fn run_session(
 /* --------------------------------- Entry ---------------------------------- */
 
 pub fn handle_socks(
-    tx: &std_mpsc::Sender(Value),
+    tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
+
     // First message should be the AgentTask envelope (blocking)
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
