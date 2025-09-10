@@ -15,9 +15,41 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::{timeout, Duration};
 
+// --- new imports for file logging ---
+use std::fs::OpenOptions;
+use std::io::Write as _; // bring std::io::Write trait into scope
+use std::time::{SystemTime, UNIX_EPOCH};
+
 /* -------------------------- Debug helpers -------------------------- */
 
 const HEX_MAX: usize = 64;
+
+// --- file logging helper ---
+fn append_log_line(task_id: &str, title: &str, detail: &str) {
+    // Default to C:\logs.txt; override with AGENT_LOG_PATH if set
+    let default_path = r"C:\logs.txt".to_string();
+    let path = std::env::var("AGENT_LOG_PATH").unwrap_or(default_path);
+
+    // Try primary, then fallback to %TEMP%\socks.log
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => {
+            let fallback = std::env::temp_dir().join("socks.log");
+            match OpenOptions::new().create(true).append(true).open(&fallback) {
+                Ok(f) => f,
+                Err(_) => return, // if both fail, silently skip file logging
+            }
+        }
+    };
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let _ = writeln!(file, "{} | task={} | {} | {}", ts, task_id, title, detail);
+    let _ = file.flush();
+}
 
 fn debug_to_mythic<T: Into<String>, U: Into<String>>(
     tx: &std_mpsc::Sender<Value>,
@@ -25,7 +57,13 @@ fn debug_to_mythic<T: Into<String>, U: Into<String>>(
     title: T,
     detail: U,
 ) {
-    let _ = tx.send(mythic_continued!(task_id, title.into(), detail.into()));
+    // to file
+    let title_s: String = title.into();
+    let detail_s: String = detail.into();
+    append_log_line(task_id, &title_s, &detail_s);
+
+    // to Mythic
+    let _ = tx.send(mythic_continued!(task_id, title_s, detail_s));
 }
 
 fn hex_preview(data: &[u8], max: usize) -> String {
