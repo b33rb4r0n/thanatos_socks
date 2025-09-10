@@ -77,9 +77,11 @@ fn send_socks_packet(
         Err(_) => json!(server_id),
     };
     tx.send(json!({
-        "server_id": sid_json,
-        "data": encode(data),
-        "exit": exit
+        "socks": [{
+            "server_id": sid_json,
+            "data": encode(data),
+            "exit": exit
+        }]
     }))?;
     Ok(())
 }
