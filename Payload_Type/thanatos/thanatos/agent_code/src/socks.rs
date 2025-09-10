@@ -329,8 +329,7 @@ async fn run_session(
         }
     };
 
-    let bound = remote.local_addr().ok();
-    let ok = build_reply(0x00, bound);
+    let ok = build_reply(0x00, None); // replies as 0.0.0.0:0 (ATYP=IPv4)
     send_socks_packet(&tx_out, &parent_task_id, &server_id, &ok, false)?;
     debug_to_mythic(
         &tx_out,
