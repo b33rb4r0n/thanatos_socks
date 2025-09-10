@@ -67,7 +67,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
 
 fn send_socks_packet(
     tx: &std_mpsc::Sender<serde_json::Value>,
-    task_id: &str,
+    _task_id: &str,              // no longer used in the envelope
     server_id: &str,
     data: &[u8],
     exit: bool,
@@ -76,19 +76,26 @@ fn send_socks_packet(
         Ok(n) => serde_json::json!(n),
         Err(_) => serde_json::json!(server_id),
     };
+    // IMPORTANT: use the dedicated "socks" action, not post_response
     tx.send(serde_json::json!({
-        "action": "post_response",
-        "responses": [{
-            "task_id": task_id,
-            "socks": [{
-                "server_id": sid_json,
-                "data": encode(data),
-                "exit": exit
-            }]
+        "action": "socks",
+        "socks": [{
+            "server_id": sid_json,
+            "data": base64::encode(data),
+            "exit": exit
         }]
     }))?;
     Ok(())
 }
+
+fn send_exit_only(
+    tx: &std_mpsc::Sender<serde_json::Value>,
+    task_id: &str,    // kept for callsite compatibility (unused here)
+    server_id: &str,
+) {
+    let _ = send_socks_packet(tx, task_id, server_id, &[], true);
+}
+
 
 fn send_exit_only(
     tx: &std_mpsc::Sender<serde_json::Value>,
