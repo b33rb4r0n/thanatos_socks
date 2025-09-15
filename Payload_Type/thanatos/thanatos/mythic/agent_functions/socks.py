@@ -94,7 +94,7 @@ class SocksCommand(CommandBase):
         "Compatible with proxychains/proxychains4. Use -port 0 to auto-assign."
     )
     version = 4
-    script_only = True  # This is purely server/RPC-driven; nothing goes to the implant
+    script_only = False  # Changed to False to send task to agent
     author = "@RedTeamGPT"
     argument_class = SocksArguments
     attackmapping = ["T1090"]
@@ -160,8 +160,8 @@ class SocksCommand(CommandBase):
                         )
                     )
                     resp.DisplayParams = f"-action start -port {assigned_port}"
-                    resp.TaskStatus = MythicStatus.Success
-                    resp.Completed = True
+                    resp.TaskStatus = "Started"  # Keep open for agent processing
+                    # Removed resp.Completed = True to send task to agent
 
             elif action == "stop":
                 await _dbg(
@@ -198,7 +198,7 @@ class SocksCommand(CommandBase):
                     )
                     resp.DisplayParams = f"-action stop -port {port}"
                     resp.TaskStatus = MythicStatus.Success
-                    resp.Completed = True
+                    resp.Completed = True  # Complete for stop
 
             else:
                 err = f"Unknown action: {action}. Use 'start' or 'stop'."
