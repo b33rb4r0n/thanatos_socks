@@ -1,5 +1,6 @@
 // POC Fixed: SOCKS5 Agent-Side Handler for Mythic in Rust
 use base64::{decode, encode};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::error::Error;
@@ -9,6 +10,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::{timeout, Duration};
+
+#[derive(Deserialize)]
+struct AgentTask {
+    id: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    parameters: Option<String>,
+}
 
 /* -------------------------- Debug helpers -------------------------- */
 
@@ -269,7 +279,7 @@ async fn run_session(
 
     let (mut r_r, mut r_w) = remote.into_split();
 
-    // A2M: Agent to Mythic (remote read -> send to Mythic)
+    // A2M: Agent to Mythic (remote read -> send to mythic)
     let tx_up = tx_out.clone();
     let sid_up = server_id.clone();
     let parent_up = parent_task_id.clone();
@@ -355,7 +365,7 @@ pub fn handle_socks(
 ) -> Result<(), Box<dyn Error>> {
     // First message should be the AgentTask envelope (blocking)
     let task_val = rx.recv()?;
-    let task: AgentTask = serde_json::from_value(task_val)?;  // Assume AgentTask struct defined elsewhere
+    let task: AgentTask = serde_json::from_value(task_val)?;
     debug_to_mythic(tx, &task.id, "socks.handler.start", "dispatcher starting");
 
     // Bridge std::mpsc -> tokio::mpsc for async processing
