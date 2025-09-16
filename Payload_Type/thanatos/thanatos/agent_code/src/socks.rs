@@ -383,8 +383,7 @@ pub fn start_socks_dispatcher(task_id: String) {
                     let data_len_b64 = item["data"].as_str().map(|s| s.len()).unwrap_or(0);
 
                     if seen <= 5 || seen % 100 == 0 {
-                        debug_to_mythic(&task_id, "socks.dispatcher.item",
-                            format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
+                        debug_to_mythic(&task_id, "socks.dispatcher.item", format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
                     }
 
                     let entry = sessions.entry(sid.clone()).or_insert_with(|| {
