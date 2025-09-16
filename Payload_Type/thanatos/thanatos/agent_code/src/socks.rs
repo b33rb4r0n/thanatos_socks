@@ -92,17 +92,19 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
     out
 }
 
-fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn Error>>
+fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn std::error::Error>> {
     let sid_json = match server_id.parse::<u64>() {
-        Ok(n) => json!(n),
-        Err(_) => json!(server_id),
+        Ok(n) => serde_json::json!(n),
+        Err(_) => serde_json::json!(server_id),
     };
-    let item = json!({
+    let item = serde_json::json!({
         "server_id": sid_json,
-        "data": encode(data),
+        "data": base64::encode(data),
         "exit": exit
     });
-    let mut out = SOCKS_OUT.lock().unwrap();
+
+    // Avoid dropping data if the mutex is poisoned
+    let mut out = SOCKS_OUT.lock().unwrap_or_else(|p| p.into_inner());
     out.push(item);
     Ok(())
 }
@@ -110,6 +112,7 @@ fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<d
 fn send_exit_live(server_id: &str) {
     let _ = send_socks_live(server_id, &[], true);
 }
+
 
 /* --------------------------- CONNECT frame parsing ------------------------- */
 
