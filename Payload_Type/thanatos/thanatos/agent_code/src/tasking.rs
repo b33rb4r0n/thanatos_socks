@@ -232,7 +232,10 @@ impl Tasker {
     pub fn get_completed_tasks(&mut self) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
         // Create the completed task information list
         let mut completed_tasks: Vec<serde_json::Value> = Vec::new();
-
+    
+        // Check for SOCKS data
+        let socks_data = socks::get_socks_data();
+        completed_tasks.extend(socks_data);
         // Iterate over running background jobs
         for task in self.background_tasks.iter() {
             // Check if a background job has any messages to send up to Mythic and add
