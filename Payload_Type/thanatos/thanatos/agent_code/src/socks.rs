@@ -52,7 +52,7 @@ pub fn socks_in_send(v: Value) -> Result<(), tokio_mpsc::error::SendError<Value>
 
 fn debug_to_mythic(task_id: &str, title: impl Into<String>, detail: impl Into<String>) {
     println!("{}: {}: {}", task_id, title.into(), detail.into());
-    // TODO: integrate with Mythic response pipeline
+    // TODO: integrate with mythic response pipeline
 }
 
 fn hex_preview(data: &[u8], max: usize) -> String {
@@ -102,7 +102,7 @@ fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<d
         "data": encode(data),
         "exit": exit
     });
-    let mut out = SOCKS_OUT.lock().unwrap();
+    let mut out = SOCKS_OUT.lock().unwrap_or_else(|_| Mutex::new(Vec::new()).lock().unwrap());
     out.push(item);
     Ok(())
 }
