@@ -92,7 +92,7 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
     out
 }
 
-fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn Error>>
     let sid_json = match server_id.parse::<u64>() {
         Ok(n) => json!(n),
         Err(_) => json!(server_id),
@@ -113,7 +113,7 @@ fn send_exit_live(server_id: &str) {
 
 /* --------------------------- CONNECT frame parsing ------------------------- */
 
-fn parse_connect(decoded: &[u8]) -> Result<(String, u16, u8), Box<dyn Error + Send + Sync>> {
+fn parse_connect(decoded: &[u8]) -> Result<(String, u16, u8), Box<dyn Error>> {
     if decoded.len() < 4 { return Err("SOCKS5 request too short".into()); }
     if decoded[0] != 0x05 { return Err("Unsupported SOCKS version".into()); }
     if decoded[1] != 0x01 { return Err("Not CONNECT (CMD!=0x01)".into()); }
@@ -188,7 +188,7 @@ async fn run_session(
     parent_task_id: String,
     server_id: String,
     mut sess_rx: tokio_mpsc::UnboundedReceiver<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     debug_to_mythic(&parent_task_id, "socks.session.start", format!("sid={}", server_id));
 
     // Get first frame
@@ -422,7 +422,7 @@ pub fn start_socks_dispatcher(task_id: String) {
 
 pub fn handle_socks(
     rx: std_mpsc::Receiver<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     // First message should be the AgentTask envelope (blocking)
     let task_val = rx.recv()?;
     let task: AgentTask = serde_json::from_value(task_val)?;
@@ -452,6 +452,6 @@ pub fn handle_socks(
 pub fn setup_socks(
     _tx: &std_mpsc::Sender<Value>,
     rx: std_mpsc::Receiver<Value>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     handle_socks(rx)
 }
