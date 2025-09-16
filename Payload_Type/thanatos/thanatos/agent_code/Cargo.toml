@@ -24,6 +24,7 @@ serde_json = "1.0"
 sha2 = "0.9.8"
 netstat2 = "0.11.1"
 tokio-util = "0.7.16"
+once_cell = "1.21.3"
 
 
 [dependencies.minreq]
