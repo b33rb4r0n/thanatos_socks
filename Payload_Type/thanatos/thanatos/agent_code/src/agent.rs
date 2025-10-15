@@ -1,6 +1,5 @@
 use crate::payloadvars;
 use crate::tasking::Tasker;
-use crate::socks::SocksState;  // ← ADD THIS LINE
 use std::sync::Arc;            // ← ADD THIS LINE
 use chrono::prelude::{DateTime, NaiveDate};
 use chrono::{Duration, Local, NaiveDateTime, NaiveTime};
