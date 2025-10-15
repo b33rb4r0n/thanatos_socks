@@ -76,21 +76,12 @@ pub struct ContinuedData {
 
 /// Data which is shared between the agent thread and worker thread
 pub struct SharedData {
-    /// Sleep interval of the agent
     pub sleep_interval: u64,
-    ///socks
-    pub socks_state: Option<Arc<SocksState>>,  // socks
-    /// Jitter of the agent
     pub jitter: u64,
-
-    /// Flag for signifying that the agent should exit
     pub exit_agent: bool,
-
-    /// Start time of the configured working hours
     pub working_start: NaiveTime,
-
-    /// End time of the configured working hours
     pub working_end: NaiveTime,
+    pub socks_state: Option<Arc<SocksState>>,  // ← ADD THIS
 }
 
 /// Main agent struct containing information with regards to C2 communication
@@ -117,10 +108,10 @@ impl Agent {
             shared: SharedData {
                 jitter: payloadvars::callback_jitter(),
                 sleep_interval: payloadvars::callback_interval(),
-                socks_state: None,  // ← ADD THIS LINE
                 exit_agent: false,
                 working_start: payloadvars::working_start(),
                 working_end: payloadvars::working_end(),
+                socks_state: None,  // ← ADD THIS
             },
             c2profile,
             tasking: Tasker::new(),
