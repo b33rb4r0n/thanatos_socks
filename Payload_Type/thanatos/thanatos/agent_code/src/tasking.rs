@@ -1,5 +1,4 @@
 use crate::agent;
-use crate::socks::{start_socks, SocksState};
 use crate::mythic_error;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -32,7 +31,6 @@ pub struct BackgroundTask {
     /// Flag indicating if this background task is designed to be manually killed
     pub killable: bool,
 
-    pub socks_state: Option<Arc<SocksState>>,
     /// Task id from Mythic associated with background task
     pub uuid: String,
 
@@ -67,7 +65,6 @@ impl Tasker {
             completed_tasks: Vec::new(),
             dispatch_val: 0,
             cached_ids: VecDeque::new(),
-            socks_state: None,  // ← ADD THIS
         }
     }
 
