@@ -13,7 +13,7 @@ strip = "symbols"
 
 [dependencies]
 aes = "0.7.5"
-base64 = "0.13"
+base64 = "0.22"  # ← Change from 0.13 to 0.22
 block-modes = "0.8.1"
 cfg-if = "1.0"
 chrono = "0.4"
