@@ -1,5 +1,7 @@
+// tasking.rs
 use crate::agent;
 use crate::mythic_error;
+use crate::socks::{SocksState, start_socks};  // ← ADD THESE IMPORTS
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::{
@@ -48,7 +50,7 @@ pub struct Tasker {
     pub completed_tasks: Vec<serde_json::Value>,
     pub dispatch_val: u32,
     pub cached_ids: VecDeque<u32>,
-    pub socks_state: Option<Arc<SocksState>>,  // ← ADD THIS
+    pub socks_state: Option<Arc<SocksState>>,  // ← ESTO AHORA DEBERÍA FUNCIONAR
 }
 
 /// Prototype for background task callback functions
@@ -65,6 +67,7 @@ impl Tasker {
             completed_tasks: Vec::new(),
             dispatch_val: 0,
             cached_ids: VecDeque::new(),
+            socks_state: None,  // ← INICIALIZA EL CAMPO
         }
     }
 
