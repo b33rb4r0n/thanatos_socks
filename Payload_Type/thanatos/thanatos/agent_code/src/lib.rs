@@ -5,6 +5,7 @@ use std::error::Error;
 use crate::agent::calculate_sleep_time;
 use crate::agent::Agent;
 
+// Declara todos los módulos, incluyendo socks
 mod agent;
 mod cat;
 mod cd;
@@ -28,6 +29,7 @@ mod rm;
 mod setenv;
 mod shell;
 mod sleep;
+mod socks;  // ← AGREGA ESTA LÍNEA
 mod ssh;
 mod tasking;
 mod unsetenv;
