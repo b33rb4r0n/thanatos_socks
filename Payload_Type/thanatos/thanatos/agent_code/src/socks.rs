@@ -17,7 +17,8 @@ pub struct SocksMsg {
 
 #[derive(Debug)]
 pub struct SocksState {
-    pub connections: Arc<Mutex<Vec<(u32, TcpStream)>>>,
+    // Cambiamos a almacenar WriteHalf en lugar de TcpStream completo
+    pub connections: Arc<Mutex<Vec<(u32, tokio::net::tcp::WriteHalf)>>>,
     pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
 }
 
@@ -65,28 +66,21 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
         let data = decode(&msg.data).unwrap_or_default();
         
         if let Some(pos) = conns.iter().position(|(id, _)| *id == msg.server_id) {
-            let (_, stream) = &mut conns[pos];
-            let _ = stream.write_all(&data).await;
+            let (_, writer) = &mut conns[pos];
+            let _ = writer.write_all(&data).await;
         } else {
             if let Ok(stream) = TcpStream::connect("127.0.0.1:80").await {
-                // CORRECCIÓN: Primero escribimos los datos
-                let _ = stream.write_all(&data).await;
+                // Dividir el stream en reader y writer
+                let (reader, writer) = stream.into_split();
                 
-                // CORRECCIÓN: Clonamos el stream usando try_clone() y manejamos el error
-                match stream.try_clone() {
-                    Ok(stream_clone) => {
-                        // Agregamos el stream original al vector de conexiones
-                        conns.push((msg.server_id, stream));
-                        
-                        // Spawneamos la tarea con el clon
-                        tokio::spawn(relay_stream(msg.server_id, stream_clone, tx.clone()));
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to clone stream: {}", e);
-                        // Si no podemos clonar, aún podemos usar el stream para esta operación
-                        let _ = stream.write_all(&data).await;
-                    }
-                }
+                // Escribir los datos iniciales
+                let _ = writer.write_all(&data).await;
+                
+                // Guardar el writer en las conexiones
+                conns.push((msg.server_id, writer));
+                
+                // Spawnear tarea con el reader para leer respuestas
+                tokio::spawn(relay_stream_reader(msg.server_id, reader, tx.clone()));
             }
         }
     }
@@ -102,10 +96,11 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
     }
 }
 
-async fn relay_stream(id: u32, mut stream: TcpStream, tx: mpsc::Sender<serde_json::Value>) {
+// Función separada para manejar solo lectura
+async fn relay_stream_reader(id: u32, mut reader: tokio::net::tcp::ReadHalf, tx: mpsc::Sender<serde_json::Value>) {
     let mut buf = [0u8; 4096];
     loop {
-        match stream.read(&mut buf).await {
+        match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
                 let data = encode(&buf[..n]);
