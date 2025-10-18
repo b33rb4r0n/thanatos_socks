@@ -31,21 +31,26 @@ pub struct AgentTask {
     pub id: String,
 }
 
-/// Response when grabbing new tasks from Mythic
+// agent.rs - Update GetTaskingResponse
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {
     /// List of pending tasks
     pub tasks: Vec<AgentTask>,
+    /// SOCKS data from Mythic
+    #[serde(default)]
+    pub socks: Vec<SocksMsg>,
 }
 
-/// Struct used for sending the completed task information
+// Add this to PostTaskingResponse
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PostTaskingResponse {
     /// Action for the post request
     pub action: String,
-
     /// List of completed tasking
     pub responses: Vec<serde_json::Value>,
+    /// SOCKS data to send back to Mythic
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub socks: Vec<SocksMsg>,
 }
 
 /// Used for holding any data which has to be passed along to a background task
