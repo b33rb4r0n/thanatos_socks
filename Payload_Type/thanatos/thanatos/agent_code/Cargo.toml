@@ -7,43 +7,42 @@ version = "0.1.14"
 authors = ["Matt Ehrnschwender (@M_alphaaa)"]
 edition = "2021"
 
-
 [profile.release]
 strip = "symbols"
 
 [dependencies]
+# === Core serialization ===
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# === SOCKS + base64 queue ===
+base64 = "0.22"
+lazy_static = "1.5"
+
+# === Cryptography & encoding ===
 aes = "0.7.5"
-base64 = "0.13"  # ← Change from 0.13 to 0.22
 block-modes = "0.8.1"
+hmac = "0.11"
+sha2 = "0.9.8"
+
+# === Miscellaneous ===
 cfg-if = "1.0"
 chrono = "0.4"
-hmac = "0.11"
 path-clean = "0.1.0"
 rand = "0.8"
-serde_json = "1.0"
-sha2 = "0.9.8"
 netstat2 = "0.11.1"
 
-[dependencies.minreq]
-version = "2.4.2"
-features = ["https-rustls-probe"]
+# === Networking / HTTP ===
+minreq = { version = "2.4.2", features = ["https-rustls-probe"] }
 
-[dependencies.openssl]
-version = "0.10.45"
-features = ["vendored"]
+# === Async runtime ===
+tokio = { version = "1.36", features = ["net", "rt-multi-thread", "io-util", "macros", "process", "sync", "time"] }
 
-[dependencies.serde]
-version = "1"
-features = ["derive"]
+# === Native crypto / SSH ===
+openssl = { version = "0.10.45", features = ["vendored"] }
+ssh2 = { version = "0.9.3", features = ["vendored-openssl"] }
 
-[dependencies.ssh2]
-version = "0.9.3"
-features = ["vendored-openssl"]
-
-[dependencies.tokio]
-version = "1.16.1"
-features = ["net", "rt-multi-thread", "io-util", "macros", "process"]
-
+# === Platform-specific dependencies ===
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
