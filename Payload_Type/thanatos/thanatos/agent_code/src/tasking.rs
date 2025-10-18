@@ -1,7 +1,7 @@
 // tasking.rs
 use crate::agent;
 use crate::mythic_error;
-use crate::socks::{SocksState, start_socks};  // ← ADD THESE IMPORTS
+use crate::socks::start_socks;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::{
