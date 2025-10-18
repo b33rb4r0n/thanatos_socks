@@ -50,7 +50,8 @@ pub struct Tasker {
     pub completed_tasks: Vec<serde_json::Value>,
     pub dispatch_val: u32,
     pub cached_ids: VecDeque<u32>,
-    pub socks_state: Option<Arc<SocksState>>,  // ← ESTO AHORA DEBERÍA FUNCIONAR
+    // ELIMINA esta línea - no necesitamos socks_state aquí
+    // pub socks_state: Option<Arc<SocksState>>,
 }
 
 /// Prototype for background task callback functions
@@ -67,7 +68,8 @@ impl Tasker {
             completed_tasks: Vec::new(),
             dispatch_val: 0,
             cached_ids: VecDeque::new(),
-            socks_state: None,  // ← INICIALIZA EL CAMPO
+            // ELIMINA esta línea
+            // socks_state: None,
         }
     }
 
@@ -224,6 +226,7 @@ impl Tasker {
         }
         Ok(())
     }
+
     pub fn get_completed_tasks(&mut self) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
         let mut completed_tasks: Vec<serde_json::Value> = Vec::new();
     
