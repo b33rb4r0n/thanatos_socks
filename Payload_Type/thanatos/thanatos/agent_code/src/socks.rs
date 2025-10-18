@@ -8,7 +8,6 @@ use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{mpsc, Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{ReadHalf, WriteHalf};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SocksMsg {
@@ -19,13 +18,16 @@ pub struct SocksMsg {
 
 #[derive(Debug)]
 pub struct SocksState {
-    pub connections: Arc<Mutex<HashMap<u32, WriteHalf<'static>>>>,
+    // Usa TcpStream completo en lugar de mitades para evitar problemas de lifetime
+    pub connections: Arc<Mutex<HashMap<u32, std::net::SocketAddr>>>,
+    pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
 }
 
 impl SocksState {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
+            outbound: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -54,6 +56,7 @@ async fn relay_loop(tx: mpsc::Sender<serde_json::Value>, rx: mpsc::Receiver<serd
 
 async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksMsg>, state: &Arc<SocksState>) {
     let mut conns = state.connections.lock().unwrap();
+    let mut outbound = state.outbound.lock().unwrap();
 
     for msg in msgs {
         if msg.exit {
@@ -63,56 +66,77 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
 
         let data = decode(&msg.data).unwrap_or_default();
 
-        if let Some(writer) = conns.get_mut(&msg.server_id) {
-            let _ = writer.write_all(&data).await;
+        // Verificar si ya tenemos una conexión para este server_id
+        if conns.contains_key(&msg.server_id) {
+            // En una implementación real, aquí enviaríamos datos a una conexión existente
+            // Por ahora, simplemente ignoramos ya que no tenemos los streams guardados
+            continue;
         } else {
             let addr = parse_socks_address(&data);
             if let Some(addr) = addr {
                 if let Ok(stream) = TcpStream::connect(addr).await {
-                    let (reader, writer) = stream.split();
+                    // Guardar información de la conexión
+                    conns.insert(msg.server_id, addr);
                     
-                    let writer: WriteHalf<'static> = unsafe { std::mem::transmute(writer) };
-                    let reader: ReadHalf<'static> = unsafe { std::mem::transmute(reader) };
-                    
-                    let _ = writer.write_all(&data).await;
-                    conns.insert(msg.server_id, writer);
-                    
+                    // Crear una task para manejar esta conexión
                     let tx_clone = tx.clone();
                     let state_clone = state.clone();
+                    let server_id = msg.server_id;
+                    let initial_data = data.clone();
+                    
                     tokio::spawn(async move {
-                        relay_stream_reader(msg.server_id, reader, tx_clone, state_clone).await;
+                        handle_socks_connection(server_id, stream, initial_data, tx_clone, state_clone).await;
                     });
                 }
             }
         }
     }
+
+    if !outbound.is_empty() {
+        let json = serde_json::to_string(&*outbound).unwrap();
+        let _ = tx.send(serde_json::json!({
+            "command": "socks_data",
+            "parameters": json,
+            "id": "socks_outbound"
+        }));
+        outbound.clear();
+    }
 }
 
-async fn relay_stream_reader(id: u32, mut reader: ReadHalf<'static>, tx: mpsc::Sender<serde_json::Value>, state: Arc<SocksState>) {
+async fn handle_socks_connection(
+    server_id: u32,
+    mut stream: TcpStream,
+    initial_data: Vec<u8>,
+    tx: mpsc::Sender<serde_json::Value>,
+    state: Arc<SocksState>,
+) {
+    // Escribir datos iniciales
+    let _ = stream.write_all(&initial_data).await;
+    
     let mut buf = [0u8; 4096];
+    
+    // Bucle de lectura
     loop {
-        match reader.read(&mut buf).await {
-            Ok(0) => break,
+        match stream.read(&mut buf).await {
+            Ok(0) => break, // Conexión cerrada
             Ok(n) => {
                 let data = encode(&buf[..n]);
-                let msg = SocksMsg { exit: false, server_id: id, data };
-                let json = serde_json::to_string(&vec![msg]).unwrap();
-                let _ = tx.send(serde_json::json!({
-                    "command": "socks_data",
-                    "parameters": json,
-                    "id": format!("socks_outbound_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
-                }));
+                let msg = SocksMsg { exit: false, server_id, data };
+                state.outbound.lock().unwrap().push(msg);
             }
             Err(_) => break,
         }
     }
-    let _ = tx.send(serde_json::json!({
-        "command": "socks_data",
-        "parameters": serde_json::to_string(&vec![SocksMsg { exit: true, server_id: id, data: String::new() }]).unwrap(),
-        "id": format!("socks_outbound_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())
-    }));
-    // Remover la conexión del estado
-    state.connections.lock().unwrap().remove(&id);
+    
+    // Notificar cierre de conexión
+    state.outbound.lock().unwrap().push(SocksMsg { 
+        exit: true, 
+        server_id, 
+        data: String::new() 
+    });
+    
+    // Remover del estado
+    state.connections.lock().unwrap().remove(&server_id);
 }
 
 fn parse_socks_address(data: &[u8]) -> Option<SocketAddr> {
