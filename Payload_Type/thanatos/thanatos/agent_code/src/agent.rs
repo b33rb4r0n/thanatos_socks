@@ -294,3 +294,5 @@ pub fn calculate_sleep_time(interval: u64, jitter: u64) -> u64 {
         interval - (interval as f64 * jitter) as u64
     }
 }
+
+}
