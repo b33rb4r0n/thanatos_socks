@@ -89,10 +89,13 @@ COPY .docker/config.toml /root/.cargo/config.toml
 # so Cargo can access crates.io during the image build.
 # Then restore them afterwards to ensure Mythic builds stay offline.
 WORKDIR /Mythic/thanatos/agent_code
+# 🧩 FIX: Vendor dependencies to a global /vendor path so Mythic can use them
 RUN sed -i '/offline/d' /root/.cargo/config.toml \
  && sed -i '/replace-with/d' /root/.cargo/config.toml \
  && sed -i '/vendored-sources/d' /root/.cargo/config.toml \
+ && mkdir -p /vendor \
  && cargo fetch && cargo vendor /vendor \
+ && cp -r /vendor /root/.cargo/vendor \
  && echo "" >> /root/.cargo/config.toml \
  && echo "[source.crates-io]" >> /root/.cargo/config.toml \
  && echo "replace-with = \"vendored-sources\"" >> /root/.cargo/config.toml \
@@ -100,6 +103,7 @@ RUN sed -i '/offline/d' /root/.cargo/config.toml \
  && echo "directory = \"/vendor\"" >> /root/.cargo/config.toml \
  && echo "[net]" >> /root/.cargo/config.toml \
  && echo "offline = true" >> /root/.cargo/config.toml
+
 
 # 🧩 EXPLANATION:
 # - We copy .docker/config.toml earlier (so it's present before vendoring)
