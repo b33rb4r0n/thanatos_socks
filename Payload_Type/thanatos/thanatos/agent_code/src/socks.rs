@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::{Read, Write};
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -41,7 +42,7 @@ impl SocksState {
 // Main SOCKS Thread
 // =========================
 pub fn start_socks(
-    _tx: &mpsc::Sender<serde_json::Value>,
+    tx: &mpsc::Sender<serde_json::Value>,
     rx: mpsc::Receiver<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
     let state = Arc::new(SocksState::new());
@@ -58,8 +59,14 @@ pub fn start_socks(
                         }
                     }
                 }
+                // After handling inbound socks_data, flush any responses to the sender
+                drain_socks_queue_and_send(tx);
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Periodically flush any accumulated SOCKS responses even when idle
+                drain_socks_queue_and_send(tx);
+                continue;
+            }
             Err(_) => break,
         }
     }
@@ -98,25 +105,36 @@ fn process_socks_messages(
                 });
                 conns.remove(&msg.server_id);
             } else {
+                // Drain available data to reduce fragmentation
                 let mut buf = [0u8; 4096];
                 stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-                match stream.read(&mut buf) {
-                    Ok(0) => {
-                        responses.push(SocksMsg {
-                            exit: true,
-                            server_id: msg.server_id,
-                            data: String::new(),
-                        });
-                        conns.remove(&msg.server_id);
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => {
+                            responses.push(SocksMsg {
+                                exit: true,
+                                server_id: msg.server_id,
+                                data: String::new(),
+                            });
+                            conns.remove(&msg.server_id);
+                            break;
+                        }
+                        Ok(n) => {
+                            responses.push(SocksMsg {
+                                exit: false,
+                                server_id: msg.server_id,
+                                data: encode(&buf[..n]),
+                            });
+                            // Try to read again until timeout/WouldBlock
+                            continue;
+                        }
+                        Err(e) => {
+                            if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
+                                break;
+                            }
+                            break;
+                        }
                     }
-                    Ok(n) => {
-                        responses.push(SocksMsg {
-                            exit: false,
-                            server_id: msg.server_id,
-                            data: encode(&buf[..n]),
-                        });
-                    }
-                    Err(_) => (),
                 }
             }
         } else {
@@ -133,13 +151,31 @@ fn process_socks_messages(
 
                         let mut buf = [0u8; 4096];
                         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-                        if let Ok(n) = stream.read(&mut buf) {
-                            if n > 0 {
-                                responses.push(SocksMsg {
-                                    exit: false,
-                                    server_id: msg.server_id,
-                                    data: encode(&buf[..n]),
-                                });
+                        loop {
+                            match stream.read(&mut buf) {
+                                Ok(0) => {
+                                    responses.push(SocksMsg {
+                                        exit: true,
+                                        server_id: msg.server_id,
+                                        data: String::new(),
+                                    });
+                                    conns.remove(&msg.server_id);
+                                    break;
+                                }
+                                Ok(n) => {
+                                    responses.push(SocksMsg {
+                                        exit: false,
+                                        server_id: msg.server_id,
+                                        data: encode(&buf[..n]),
+                                    });
+                                    continue;
+                                }
+                                Err(e) => {
+                                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
+                                        break;
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
@@ -241,4 +277,34 @@ fn build_socks5_success(addr: SocketAddr) -> Vec<u8> {
 
 fn build_socks5_error(code: u8) -> Vec<u8> {
     vec![0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0]
+}
+
+// =========================
+// Outbound Queue Drainer
+// =========================
+fn drain_socks_queue_and_send(tx: &mpsc::Sender<serde_json::Value>) {
+    // Drain the global queue and send a single aggregated message upstream
+    let msgs: Vec<SocksMsg> = {
+        let mut q = SOCKS_QUEUE.lock().unwrap();
+        if q.is_empty() {
+            return;
+        }
+        q.drain(..).collect()
+    };
+
+    if msgs.is_empty() {
+        return;
+    }
+
+    let params = match serde_json::to_string(&msgs) {
+        Ok(s) => s,
+        Err(_) => String::from("[]"),
+    };
+
+    let payload = serde_json::json!({
+        "command": "socks_data",
+        "parameters": params,
+    });
+
+    let _ = tx.send(payload);
 }
