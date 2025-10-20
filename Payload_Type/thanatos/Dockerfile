@@ -74,10 +74,11 @@ WORKDIR /Mythic
 COPY main.py main.py
 COPY thanatos thanatos
 
-# Fetch dependencies
+# Fetch and vendor all dependencies based on the current Cargo.toml
 WORKDIR /Mythic/thanatos/agent_code
 
-RUN cargo vendor /vendor
+# Ensure registry is available (requires internet during docker build)
+RUN cargo fetch && cargo vendor /vendor
 
 WORKDIR /Mythic
 
