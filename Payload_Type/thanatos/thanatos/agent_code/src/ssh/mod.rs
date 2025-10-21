@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use serde::Deserialize;
 use ssh2::Session;
 use std::error::Error;

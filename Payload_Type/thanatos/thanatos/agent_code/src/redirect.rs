@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_continued;
 use serde::Deserialize;
 use std::result::Result;

@@ -1,5 +1,5 @@
 // tasking.rs
-use crate::agent;
+use crate::{AgentTask, SharedData};
 use crate::mythic_error;
 use crate::socks::start_socks;
 use std::collections::VecDeque;
@@ -57,8 +57,8 @@ impl Tasker {
     /// Process all pending tasks from Mythic
     pub fn process_tasks(
         &mut self,
-        tasks: Option<&Vec<agent::AgentTask>>,
-        agent: &mut agent::SharedData,
+        tasks: Option<&Vec<AgentTask>>,
+        agent: &mut SharedData,
     ) -> Result<(), Box<dyn Error>> {
         if let Some(tasks) = tasks {
             for task in tasks.iter() {
@@ -178,7 +178,7 @@ impl Tasker {
     /// Generic wrapper for spawning background jobs
     fn spawn_bg(
         &mut self,
-        task: &agent::AgentTask,
+        task: &AgentTask,
         callback: SpawnCbType,
         killable: bool,
     ) -> Result<(), Box<dyn Error>> {

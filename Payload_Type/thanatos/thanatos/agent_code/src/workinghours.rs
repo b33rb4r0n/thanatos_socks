@@ -1,4 +1,4 @@
-use crate::agent::{AgentTask, SharedData};
+use crate::{AgentTask, SharedData};
 use crate::mythic_success;
 use chrono::NaiveTime;
 use serde::Deserialize;

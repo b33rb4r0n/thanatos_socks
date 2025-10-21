@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_success;
 use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo};
 use serde::Serialize;

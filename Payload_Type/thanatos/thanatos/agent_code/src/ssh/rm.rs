@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::Path;
 use std::result::Result;
 
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_success;
 
 use super::SshArgs;

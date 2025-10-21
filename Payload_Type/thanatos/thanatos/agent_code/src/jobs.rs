@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::tasking::BackgroundTask;
 use crate::{mythic_error, mythic_success};
 use serde::Deserialize;

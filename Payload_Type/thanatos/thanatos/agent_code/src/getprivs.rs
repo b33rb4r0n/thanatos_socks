@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::mythic_success;
 use std::error::Error;
 use std::result::Result;

