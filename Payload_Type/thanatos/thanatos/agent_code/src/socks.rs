@@ -102,6 +102,9 @@ fn process_socks_messages(
             continue;
         }
 
+        eprintln!("DEBUG: Processing message for server_id {} with {} bytes of data", msg.server_id, data.len());
+        eprintln!("DEBUG: Current connections: {:?}", conns.keys().collect::<Vec<_>>());
+
         if let Some(stream) = conns.get_mut(&msg.server_id) {
             // Write data to the target server
             if stream.write_all(&data).is_err() {
@@ -154,6 +157,7 @@ fn process_socks_messages(
                 }
             }
         } else {
+            // Try to parse as SOCKS5 connect request first
             if let Some((target_addr, response_data)) = handle_socks_connect(&data) {
                 match TcpStream::connect(&target_addr) {
                     Ok(stream) => {
@@ -179,13 +183,9 @@ fn process_socks_messages(
                     }
                 }
             } else {
-                let err_resp = build_socks5_error(0x07);
-                responses.push(SocksMsg {
-                    exit: false,
-                    server_id: msg.server_id,
-                    data: general_purpose::STANDARD.encode(&err_resp),
-                });
-                eprintln!("DEBUG: Failed to parse SOCKS5 connect request");
+                // If it's not a SOCKS5 connect request, but we don't have a connection,
+                // this might be data for a connection that was closed. Log and ignore.
+                eprintln!("DEBUG: Received data for unknown connection {} ({} bytes), ignoring", msg.server_id, data.len());
             }
         }
     }
