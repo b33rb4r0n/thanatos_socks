@@ -1,6 +1,7 @@
 use crate::agent::{AgentTask, ContinuedData};
 use crate::mythic_success;
 use crate::utils::unverbatim;
+use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::error::Error;
@@ -134,7 +135,7 @@ pub fn download_file(
 
         // Read a chunk of file data to the buffer and base64 encode it
         let len = c.read(&mut buffer)?;
-        let chunk_data = base64::encode(&buffer[..len]);
+        let chunk_data = general_purpose::STANDARD.encode(&buffer[..len]);
 
         // Create the metadata with the chunk of data
         let chunk_metadata = DownloadChunk {
