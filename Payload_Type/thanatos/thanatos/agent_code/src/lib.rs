@@ -2,8 +2,6 @@ use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime};
 use chrono::Duration;
 use std::error::Error;
 
-use agent::Agent;
-
 // Declara todos los módulos, incluyendo socks
 mod agent;
 mod cat;
@@ -37,6 +35,7 @@ mod utils;
 mod workinghours;
 
 // Re-export commonly used types
+pub use agent::Agent;
 pub use agent::{AgentTask, ContinuedData, SharedData, calculate_sleep_time};
 
 /// Real entrypoint of the program.
@@ -67,7 +66,7 @@ pub fn real_main() -> Result<(), Box<dyn Error>> {
 /// Main code which runs the agent
 fn run_beacon() -> Result<(), Box<dyn Error>> {
     // Create a new agent object
-    let mut agent = Agent::new();
+    let mut agent = crate::Agent::new();
 
     // Get the initial interval from the config
     let mut interval = payloadvars::callback_interval();
