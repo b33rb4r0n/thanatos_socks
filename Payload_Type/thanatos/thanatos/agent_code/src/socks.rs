@@ -19,9 +19,10 @@ pub struct SocksMsg {
 }
 
 // =========================
-// Global SOCKS Queue
+// Global SOCKS Queues
 // =========================
-pub static SOCKS_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
+pub static SOCKS_INBOUND_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
+pub static SOCKS_OUTBOUND_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 
 #[derive(Debug)]
 pub struct SocksState {
@@ -41,34 +42,39 @@ impl SocksState {
 // =========================
 pub fn start_socks(
     tx: &mpsc::Sender<serde_json::Value>,
-    rx: mpsc::Receiver<serde_json::Value>,
+    _rx: mpsc::Receiver<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
     let state = Arc::new(SocksState::new());
 
     loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(msg) => {
-                if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
-                    if task.command == "socks_data" {
-                        if let Ok(msgs) = serde_json::from_str::<Vec<SocksMsg>>(&task.parameters) {
-                            if let Err(e) = process_socks_messages(msgs, &state) {
-                                eprintln!("SOCKS error: {e}");
-                            }
-                        }
-                    }
+        // Check for new SOCKS messages in the inbound queue
+        let msgs_to_process: Vec<SocksMsg> = {
+            if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
+                if !queue.is_empty() {
+                    let msgs: Vec<SocksMsg> = queue.drain(..).collect();
+                    eprintln!("DEBUG: Processing {} SOCKS messages from inbound queue", msgs.len());
+                    msgs
+                } else {
+                    Vec::new()
                 }
-                // After handling inbound socks_data, flush any responses to the sender
-                drain_socks_queue_and_send(tx);
+            } else {
+                Vec::new()
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Periodically flush any accumulated SOCKS responses even when idle
-                drain_socks_queue_and_send(tx);
-                continue;
+        };
+
+        // Process any queued SOCKS messages
+        if !msgs_to_process.is_empty() {
+            if let Err(e) = process_socks_messages(msgs_to_process, &state) {
+                eprintln!("SOCKS error: {e}");
             }
-            Err(_) => break,
         }
+
+        // Always flush any accumulated SOCKS responses
+        drain_socks_queue_and_send(tx);
+
+        // Sleep briefly to avoid busy waiting
+        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
 }
 
 // =========================
@@ -198,7 +204,7 @@ fn process_socks_messages(
     }
 
     if !responses.is_empty() {
-        let mut q = SOCKS_QUEUE.lock().unwrap();
+        let mut q = SOCKS_OUTBOUND_QUEUE.lock().unwrap();
         q.extend(responses);
     }
 
@@ -281,9 +287,9 @@ fn build_socks5_error(code: u8) -> Vec<u8> {
 // Outbound Queue Drainer
 // =========================
 fn drain_socks_queue_and_send(tx: &mpsc::Sender<serde_json::Value>) {
-    // Drain the global queue and send a single aggregated message upstream
+    // Drain the outbound queue and send a single aggregated message upstream
     let msgs: Vec<SocksMsg> = {
-        let mut q = SOCKS_QUEUE.lock().unwrap();
+        let mut q = SOCKS_OUTBOUND_QUEUE.lock().unwrap();
         if q.is_empty() {
             return;
         }

