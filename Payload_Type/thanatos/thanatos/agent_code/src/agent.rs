@@ -28,8 +28,14 @@ pub struct AgentTask {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {
     pub tasks: Vec<AgentTask>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socks: Option<Vec<SocksMsg>>,
+}
+
+/// Fallback response structure if the main one fails
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetTaskingResponseFallback {
+    pub tasks: Vec<AgentTask>,
 }
 
 /// Response to send back to Mythic on "post_response"
@@ -103,7 +109,28 @@ impl Agent {
         .to_string();
 
         let body = self.c2profile.send_data(&json_body)?;
-        let response: GetTaskingResponse = serde_json::from_str(&body)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON from Mythic: {}", body);
+        
+        let response = match serde_json::from_str::<GetTaskingResponse>(&body) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("DEBUG: Failed to deserialize GetTaskingResponse, trying fallback: {}", e);
+                // Try fallback structure without socks field
+                match serde_json::from_str::<GetTaskingResponseFallback>(&body) {
+                    Ok(fallback) => GetTaskingResponse {
+                        tasks: fallback.tasks,
+                        socks: None,
+                    },
+                    Err(fallback_err) => {
+                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
+                        eprintln!("DEBUG: JSON was: {}", body);
+                        return Err(Box::new(fallback_err));
+                    }
+                }
+            }
+        };
 
         let mut all_tasks: Vec<AgentTask> = Vec::new();
 
@@ -151,7 +178,16 @@ impl Agent {
 
         let req_payload = serde_json::to_string(&body)?;
         let json_response = self.c2profile.send_data(&req_payload)?;
-        let response: PostTaskingResponse = serde_json::from_str(&json_response)?;
+        
+        // Debug: Print the received JSON to understand the structure
+        eprintln!("DEBUG: Received JSON response from send_tasking: {}", json_response);
+        
+        let response: PostTaskingResponse = serde_json::from_str(&json_response)
+            .map_err(|e| {
+                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse: {}", e);
+                eprintln!("DEBUG: JSON was: {}", json_response);
+                e
+            })?;
 
         // Handle continued tasks
         let mut pending_tasks: Vec<AgentTask> = Vec::new();
