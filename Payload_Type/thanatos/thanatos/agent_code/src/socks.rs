@@ -38,43 +38,45 @@ impl SocksState {
 }
 
 // =========================
-// Main SOCKS Thread
+// SOCKS Processing Functions
 // =========================
-pub fn start_socks(
-    tx: &mpsc::Sender<serde_json::Value>,
-    _rx: mpsc::Receiver<serde_json::Value>,
-) -> Result<(), Box<dyn Error>> {
-    let state = Arc::new(SocksState::new());
 
-    loop {
-        // Check for new SOCKS messages in the inbound queue
-        let msgs_to_process: Vec<SocksMsg> = {
-            if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
-                if !queue.is_empty() {
-                    let msgs: Vec<SocksMsg> = queue.drain(..).collect();
-                    eprintln!("DEBUG: Processing {} SOCKS messages from inbound queue", msgs.len());
-                    msgs
-                } else {
-                    Vec::new()
-                }
+/// Process SOCKS messages synchronously (called from main agent loop)
+pub fn process_socks_messages_sync() -> Result<(), Box<dyn Error>> {
+    let state = Arc::new(SocksState::new());
+    
+    // Check for new SOCKS messages in the inbound queue
+    let msgs_to_process: Vec<SocksMsg> = {
+        if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
+            if !queue.is_empty() {
+                let msgs: Vec<SocksMsg> = queue.drain(..).collect();
+                eprintln!("DEBUG: Processing {} SOCKS messages from inbound queue", msgs.len());
+                msgs
             } else {
                 Vec::new()
             }
-        };
-
-        // Process any queued SOCKS messages
-        if !msgs_to_process.is_empty() {
-            if let Err(e) = process_socks_messages(msgs_to_process, &state) {
-                eprintln!("SOCKS error: {e}");
-            }
+        } else {
+            Vec::new()
         }
+    };
 
-        // Always flush any accumulated SOCKS responses
-        drain_socks_queue_and_send(tx);
-
-        // Sleep briefly to avoid busy waiting
-        std::thread::sleep(Duration::from_millis(100));
+    // Process any queued SOCKS messages
+    if !msgs_to_process.is_empty() {
+        if let Err(e) = process_socks_messages(msgs_to_process, &state) {
+            eprintln!("SOCKS error: {e}");
+        }
     }
+
+    Ok(())
+}
+
+/// Legacy function for backward compatibility (not used in new implementation)
+pub fn start_socks(
+    _tx: &mpsc::Sender<serde_json::Value>,
+    _rx: mpsc::Receiver<serde_json::Value>,
+) -> Result<(), Box<dyn Error>> {
+    eprintln!("DEBUG: Legacy SOCKS thread started (not used in new implementation)");
+    Ok(())
 }
 
 // =========================
@@ -284,31 +286,14 @@ fn build_socks5_error(code: u8) -> Vec<u8> {
 }
 
 // =========================
-// Outbound Queue Drainer
+// SOCKS Queue Management
 // =========================
-fn drain_socks_queue_and_send(tx: &mpsc::Sender<serde_json::Value>) {
-    // Drain the outbound queue and send a single aggregated message upstream
-    let msgs: Vec<SocksMsg> = {
-        let mut q = SOCKS_OUTBOUND_QUEUE.lock().unwrap();
-        if q.is_empty() {
-            return;
-        }
-        q.drain(..).collect()
-    };
 
-    if msgs.is_empty() {
-        return;
+/// Get SOCKS responses from the outbound queue (called by main agent)
+pub fn get_socks_responses() -> Vec<SocksMsg> {
+    if let Ok(mut queue) = SOCKS_OUTBOUND_QUEUE.lock() {
+        queue.drain(..).collect()
+    } else {
+        Vec::new()
     }
-
-    let params = match serde_json::to_string(&msgs) {
-        Ok(s) => s,
-        Err(_) => String::from("[]"),
-    };
-
-    let payload = serde_json::json!({
-        "command": "socks_data",
-        "parameters": params,
-    });
-
-    let _ = tx.send(payload);
 }
