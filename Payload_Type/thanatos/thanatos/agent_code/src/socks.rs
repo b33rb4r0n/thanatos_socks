@@ -53,10 +53,7 @@ pub fn process_socks_messages_sync() -> Result<(), Box<dyn Error>> {
         if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
             if !queue.is_empty() {
                 let msgs = queue.drain(..).collect::<Vec<_>>();
-                eprintln!(
-                    "DEBUG: Processing {} SOCKS messages from inbound queue",
-                    msgs.len()
-                );
+                // Process SOCKS messages silently
                 msgs
             } else {
                 Vec::new()
@@ -99,7 +96,7 @@ fn process_socks_messages(
         if msg.exit {
             if let Some(stream) = conns.remove(&msg.server_id) {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
-                eprintln!("DEBUG: Closed connection {}", msg.server_id);
+                // Connection closed
             }
             continue;
         }
@@ -109,19 +106,12 @@ fn process_socks_messages(
             continue;
         }
 
-        eprintln!(
-            "DEBUG: Processing message for server_id {} ({} bytes)",
-            msg.server_id,
-            data.len()
-        );
+        // Process SOCKS message
 
         if let Some(stream) = conns.get_mut(&msg.server_id) {
             // Write data to the target server
             if let Err(e) = stream.write_all(&data) {
-                eprintln!(
-                    "DEBUG: Failed to write to target server for {}: {}",
-                    msg.server_id, e
-                );
+                // Write failed
                 responses.push(SocksMsg {
                     exit: true,
                     server_id: msg.server_id,
@@ -137,7 +127,7 @@ fn process_socks_messages(
 
             match stream.read(&mut buf) {
                 Ok(0) => {
-                    eprintln!("DEBUG: Target closed connection for {}", msg.server_id);
+                    // Target closed connection
                     responses.push(SocksMsg {
                         exit: true,
                         server_id: msg.server_id,
@@ -146,10 +136,7 @@ fn process_socks_messages(
                     conns.remove(&msg.server_id);
                 }
                 Ok(n) => {
-                    eprintln!(
-                        "DEBUG: Read {} bytes from target for connection {}",
-                        n, msg.server_id
-                    );
+                    // Forward data from target to client
                     responses.push(SocksMsg {
                         exit: false,
                         server_id: msg.server_id,
@@ -157,13 +144,10 @@ fn process_socks_messages(
                     });
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-                    // No data yet — normal
+                    // No data available yet
                 }
-                Err(e) => {
-                    eprintln!(
-                        "DEBUG: Read error from target for {}: {}",
-                        msg.server_id, e
-                    );
+                Err(_) => {
+                    // Read error - close connection
                     responses.push(SocksMsg {
                         exit: true,
                         server_id: msg.server_id,
@@ -177,7 +161,7 @@ fn process_socks_messages(
             // Phase 1: SOCKS5 Greeting
             // ======================
             if data.len() == 3 && data[0] == 0x05 && data[1] == 0x01 && data[2] == 0x00 {
-                eprintln!("DEBUG: SOCKS5 handshake greeting received");
+                // SOCKS5 handshake greeting
                 responses.push(SocksMsg {
                     exit: false,
                     server_id: msg.server_id,
@@ -199,7 +183,6 @@ fn process_socks_messages(
                             data: general_purpose::STANDARD.encode(&response_data),
                         });
                         conns.insert(msg.server_id, stream);
-                        eprintln!("DEBUG: Established SOCKS5 connection to {:?}", target_addr);
                     }
                     Err(e) => {
                         let err_resp = build_socks5_error(0x05);
@@ -208,15 +191,11 @@ fn process_socks_messages(
                             server_id: msg.server_id,
                             data: general_purpose::STANDARD.encode(&err_resp),
                         });
-                        eprintln!("DEBUG: Failed to connect to {:?}: {}", target_addr, e);
+                        // Connection failed
                     }
                 }
             } else {
-                eprintln!(
-                    "DEBUG: Received data for unknown or invalid connection {} ({} bytes)",
-                    msg.server_id,
-                    data.len()
-                );
+                // Unknown connection - ignore
             }
         }
     }

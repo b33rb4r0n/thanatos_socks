@@ -23,6 +23,7 @@ mod ps;
 mod pwd;
 mod redirect;
 mod rm;
+mod screenshot;
 mod setenv;
 mod shell;
 mod sleep;
