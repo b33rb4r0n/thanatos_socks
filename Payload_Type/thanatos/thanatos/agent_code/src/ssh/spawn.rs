@@ -1,6 +1,6 @@
 use super::{ssh_authenticate, Credentials};
-use crate::agent::AgentTask;
-use crate::agent::ContinuedData;
+use crate::AgentTask;
+use crate::ContinuedData;
 use crate::{mythic_continued, mythic_success};
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
