@@ -44,7 +44,9 @@ impl SocksState {
 
 /// Process SOCKS messages synchronously (called from main agent loop)
 pub fn process_socks_messages_sync() -> Result<(), Box<dyn Error>> {
-    let state = Arc::new(SocksState::new());
+    // Use a static state to maintain connections across calls
+    static SOCKS_STATE: Lazy<Arc<SocksState>> = Lazy::new(|| Arc::new(SocksState::new()));
+    let state = SOCKS_STATE.clone();
     
     // Check for new SOCKS messages in the inbound queue
     let msgs_to_process: Vec<SocksMsg> = {
