@@ -1,7 +1,7 @@
 // socks.rs
 use crate::agent::AgentTask;
 use base64::{decode, encode};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -14,9 +14,7 @@ use std::time::Duration;
 // =========================
 // Global SOCKS Queue
 // =========================
-lazy_static! {
-    pub static ref SOCKS_QUEUE: Arc<Mutex<Vec<SocksMsg>>> = Arc::new(Mutex::new(Vec::new()));
-}
+pub static SOCKS_QUEUE: Lazy<Arc<Mutex<Vec<SocksMsg>>>> = Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SocksMsg {
