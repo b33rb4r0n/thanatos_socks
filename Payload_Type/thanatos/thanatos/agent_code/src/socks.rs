@@ -83,7 +83,7 @@ fn process_socks_messages(
 
     for msg in msgs {
         if msg.exit {
-            if let Some(mut stream) = conns.remove(&msg.server_id) {
+            if let Some(stream) = conns.remove(&msg.server_id) {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
             continue;
