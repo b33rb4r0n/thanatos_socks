@@ -1,7 +1,7 @@
 use crate::payloadvars;
 use crate::tasking::Tasker;
 use crate::profiles::Profile;
-use crate::socks::{SocksMsg, SOCKS_INBOUND_QUEUE, process_socks_messages_sync, get_socks_responses};
+use crate::socks::{SocksMsg, SOCKS_INBOUND_QUEUE, get_socks_responses};
 use chrono::prelude::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use chrono::Duration;
 use rand::Rng;

