@@ -55,11 +55,16 @@ version = "0.3"
 features = [
   "aclapi",
   "errhandlingapi",
+  "handleapi",
   "impl-default",
+  "memoryapi",
+  "processthreadsapi",
   "securitybaseapi",
+  "synchapi",
   "tlhelp32",
   "winbase",
   "wincon",
+  "winnt",
   "wow64apiset",
   "sysinfoapi"
 ]
