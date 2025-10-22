@@ -10,6 +10,10 @@
 
 Thanatos is a Windows and Linux C2 agent written in rust.
 
+## Contributors
+- **Original Author**: Matt Ehrnschwender (@M_alphaaa)
+- **Contributor**: B4r0n - Added SOCKS proxy functionality, screenshot capture, clipboard access, and credential prompting capabilities
+
 # Installation
 To install Thanatos, you will need [Mythic](https://github.com/its-a-feature/Mythic) set up on a machine.
 
@@ -34,11 +38,15 @@ sudo ./mythic-cli c2 start http
     * ssh-agent hijacking
   - Streaming portscan
   - Stand up TCP redirectors
+  - **SOCKS5 Proxy** - Tunnel traffic through the agent (contributed by B4r0n)
+  - **Screenshot Capture** - Take desktop screenshots on Windows (contributed by B4r0n)
+  - **Clipboard Access** - Retrieve clipboard contents on Windows (contributed by B4r0n)
+  - **Credential Prompting** - Prompt users for Windows credentials using CredUI (contributed by B4r0n)
 
 
 ## Future Additions
   - v0.2.0
-    * [ ] Socks proxying
+    * [x] Socks proxying ✅ (Implemented by B4r0n)
     * [ ] Windows token manipulation
     * [ ] More browser script integration
     * [ ] DNS C2 profile
@@ -49,8 +57,10 @@ sudo ./mythic-cli c2 start http
 
 Command | Syntax | Description
 ------- | ------ | -----------
+askcreds | `askcreds [reason]` | Prompt the user for Windows credentials using CredUI (Windows only).
 cat | `cat [file]` | Output the contents of a file.
 cd | `cd [new directory]` | Change directory.
+clipboard | `clipboard` | Retrieve the contents of the clipboard (Windows only).
 cp | `cp [source] [destination]` | Copy a file from [source] to [destination].
 download | `download [path]` | Download a file from the target system (supports relative paths).
 exit | `exit` | Exit the agent.
@@ -66,9 +76,11 @@ ps | `ps` | Get a list of currently running processes.
 pwd | `pwd` | Print working directory.
 redirect | `redirect [<bindhost>:<bindport>:<connecthost>:<connectport>]` | Setup a TCP redirector on the remote system.
 rm | `rm [path]` | Remove a file or directory (supports relative paths).
+screenshot | `screenshot` | Take a screenshot of the desktop (Windows only).
 setenv | `setenv [name] [value]` | Set environment variable [name] to [value].
 shell | `shell [command]` | Run a shell command with `bash -c` on Linux or `cmd.exe /c` on Windows in a new thread.
 sleep | `sleep [interval][units] [jitter]` | Set the sleep interval and jitter (supports unit suffixing).
+socks | `socks -port <number> -action {start|stop} [-username u] [-password p]` | Enable a SOCKS5 proxy on the Mythic server tunneled through this agent.
 ssh | `ssh [popup]` | Use ssh to execute commands, download/upload files or grab directory listings.
 ssh-agent | `ssh-agent [-c <socket>] [-d] [-l]` | Connect to running ssh agent sockets on the host or list identities.
 ssh-spawn | `ssh-spawn [popup]` | Spawn a Mythic agent on a remote host using ssh.
