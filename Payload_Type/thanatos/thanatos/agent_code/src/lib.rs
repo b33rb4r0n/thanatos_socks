@@ -6,6 +6,7 @@ use std::error::Error;
 mod agent;
 mod cat;
 mod cd;
+mod clipboard;
 mod cp;
 mod download;
 mod exit;

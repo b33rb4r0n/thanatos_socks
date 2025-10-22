@@ -61,5 +61,13 @@ features = [
   "winbase",
   "wincon",
   "wow64apiset",
-  "sysinfoapi"
+  "sysinfoapi",
+  "winuser",  # Added for clipboard functionality
+  "winnt",    # Added for clipboard functionality
 ]
+
+# macOS clipboard support
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
+objc-foundation = "0.1"
+block = "0.1.6"
