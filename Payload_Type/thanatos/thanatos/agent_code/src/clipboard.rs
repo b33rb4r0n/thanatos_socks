@@ -8,7 +8,7 @@ use crate::agent::ClipboardArgs;
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::*;
 #[cfg(target_os = "windows")]
-use winapi::um::winbase::GlobalSize;
+use winapi::um::winbase::{GlobalSize, GlobalLock, GlobalUnlock};
 #[cfg(target_os = "windows")]
 use winapi::ctypes::c_void;
 #[cfg(target_os = "windows")]
@@ -34,14 +34,14 @@ impl WindowsClipboard {
                     return Ok(());
                 }
             }
-            
+
             if attempt == MAX_RETRIES - 1 {
                 return Err(format!("Failed to open clipboard after {} attempts", MAX_RETRIES));
             }
-            
+
             thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
         }
-        
+
         Err("Unexpected error opening clipboard".to_string())
     }
 
@@ -56,10 +56,10 @@ impl WindowsClipboard {
             Self::try_open_clipboard()?;
 
             let result = Self::inner_get();
-            
+
             // Always try to close the clipboard
             CloseClipboard();
-            
+
             result
         }
     }
@@ -87,10 +87,10 @@ impl WindowsClipboard {
 
             // Convert the wide string to Rust String
             let result = Self::wide_ptr_to_string(pointer as *const u16, size);
-            
+
             // Unlock the memory
             GlobalUnlock(handle as *mut c_void);
-            
+
             result.map(Some)
         }
     }
@@ -103,13 +103,13 @@ impl WindowsClipboard {
 
         // Calculate the number of wide characters (size is in bytes, u16 is 2 bytes)
         let char_count = size / 2;
-        
+
         // Create a slice from the pointer
         let wide_slice = unsafe { std::slice::from_raw_parts(pointer, char_count) };
-        
+
         // Convert to OsString and then to String
         let os_string = OsString::from_wide(wide_slice);
-        
+
         // Convert to regular String, handling any conversion errors
         match os_string.into_string() {
             Ok(mut string) => {
@@ -152,12 +152,12 @@ impl Clipboard {
         {
             WindowsClipboard::get_text()
         }
-        
+
         #[cfg(target_os = "macos")]
         {
             OsxClipboard::get_text()
         }
-        
+
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             Err("Clipboard not implemented for this OS".to_string())

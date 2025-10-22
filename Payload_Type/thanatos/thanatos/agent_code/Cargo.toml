@@ -31,6 +31,7 @@ chrono = "0.4"
 path-clean = "0.1.0"
 rand = "0.8"
 netstat2 = "0.11.1"
+bytemuck = "1.17"       # used for safe struct -> bytes conversions (BMP headers)
 
 # === Networking / HTTP ===
 minreq = { version = "2.4", features = ["https-rustls-probe"] }
@@ -49,7 +50,9 @@ libc = "0.2"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-acl = "0.1"
 wmi = "0.9"
+bytemuck = { version = "1.17", optional = false }
 
+# winapi (scoped to windows target): añadidos los módulos que usamos en los ficheros
 [target.'cfg(target_os = "windows")'.dependencies.winapi]
 version = "0.3"
 features = [
@@ -68,5 +71,12 @@ features = [
   "winnt",
   "winuser",
   "wow64apiset",
-  "sysinfoapi"
+  "sysinfoapi",
+
+  # módulos adicionales necesarios para GDI & utilidades usadas
+  "wingdi",
+  "combaseapi",
+  "minwindef",
+  "windef",
+  "basetsd",
 ]

