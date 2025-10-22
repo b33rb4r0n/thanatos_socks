@@ -4,6 +4,7 @@ use std::error::Error;
 
 // Declara todos los módulos, incluyendo socks
 mod agent;
+mod askcreds;
 mod cat;
 mod cd;
 mod clipboard;
