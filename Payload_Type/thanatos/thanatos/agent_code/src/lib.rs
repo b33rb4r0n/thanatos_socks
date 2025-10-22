@@ -28,6 +28,7 @@ mod rm;
 mod screenshot;
 mod setenv;
 mod shell;
+mod shinject;
 mod sleep;
 mod socks;  // ← AGREGA ESTA LÍNEA
 mod ssh;

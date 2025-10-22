@@ -20,9 +20,9 @@ from mythic_container.PayloadBuilder import (
 
 # Class defining information about the Thanatos payload
 class Thanatos(PayloadType):
-    name = "thanatos"  # Name of the payload
+    name = "dwcc"  # Name of the payload
     file_extension = "exe"  # default file extension to use when creating payloads
-    author = "@M_alphaaa"  # authors
+    author = "@B4r0n"  # authors
 
     # Platforms that thanatos supports
     supported_os = [

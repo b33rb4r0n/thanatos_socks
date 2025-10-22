@@ -52,6 +52,13 @@ pub struct AskCredsArgs {
     pub reason: Option<String>,
 }
 
+/// Struct containing the shinject args from Mythic
+#[derive(Debug, Deserialize)]
+pub struct ShinjectArgs {
+    pub shellcode: String,  // File ID from Mythic
+    pub process_id: u32,
+}
+
 /// Response from Mythic on "get_tasking"
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {
