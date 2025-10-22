@@ -131,13 +131,9 @@ impl Agent {
 
         let body = self.c2profile.send_data(&json_body)?;
         
-        // Debug: Print the received JSON to understand the structure
-        eprintln!("DEBUG: Received JSON from Mythic: {}", body);
-        
         let response = match serde_json::from_str::<GetTaskingResponse>(&body) {
             Ok(resp) => resp,
-            Err(e) => {
-                eprintln!("DEBUG: Failed to deserialize GetTaskingResponse, trying fallback: {}", e);
+            Err(_e) => {
                 // Try fallback structure without socks field
                 match serde_json::from_str::<GetTaskingResponseFallback>(&body) {
                     Ok(fallback) => GetTaskingResponse {
@@ -145,8 +141,6 @@ impl Agent {
                         socks: None,
                     },
                     Err(fallback_err) => {
-                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
-                        eprintln!("DEBUG: JSON was: {}", body);
                         return Err(Box::new(fallback_err));
                     }
                 }
@@ -161,7 +155,6 @@ impl Agent {
                 // Send SOCKS messages directly to the SOCKS thread via the inbound queue
                 if let Ok(mut queue) = SOCKS_INBOUND_QUEUE.lock() {
                     queue.extend(socks_data);
-                    eprintln!("DEBUG: Added {} SOCKS messages to inbound queue", queue.len());
                 }
             }
         }
@@ -193,13 +186,9 @@ impl Agent {
         let req_payload = serde_json::to_string(&body)?;
         let json_response = self.c2profile.send_data(&req_payload)?;
         
-        // Debug: Print the received JSON to understand the structure
-        eprintln!("DEBUG: Received JSON response from send_tasking: {}", json_response);
-        
         let response = match serde_json::from_str::<PostTaskingResponse>(&json_response) {
             Ok(resp) => resp,
-            Err(e) => {
-                eprintln!("DEBUG: Failed to deserialize PostTaskingResponse, trying fallback: {}", e);
+            Err(_e) => {
                 // Try fallback structure without socks field
                 match serde_json::from_str::<PostTaskingResponseFallback>(&json_response) {
                     Ok(fallback) => PostTaskingResponse {
@@ -208,8 +197,6 @@ impl Agent {
                         socks: None,
                     },
                     Err(fallback_err) => {
-                        eprintln!("DEBUG: Fallback also failed: {}", fallback_err);
-                        eprintln!("DEBUG: JSON was: {}", json_response);
                         return Err(Box::new(fallback_err));
                     }
                 }
