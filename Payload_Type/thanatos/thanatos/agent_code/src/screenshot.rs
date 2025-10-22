@@ -1,5 +1,5 @@
 // screenshot.rs
-use crate::AgentTask;
+use crate::{AgentTask, ScreenshotArgs};
 use crate::mythic_success;
 use base64::{Engine as _, engine::general_purpose};
 use std::error::Error;

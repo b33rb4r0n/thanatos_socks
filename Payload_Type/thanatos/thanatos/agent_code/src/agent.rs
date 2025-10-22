@@ -42,6 +42,10 @@ struct SshAgentArgs {
 #[derive(Debug, Deserialize)]
 pub struct ClipboardArgs {}
 
+/// Struct containing the screenshot args from Mythic
+#[derive(Debug, Deserialize)]
+pub struct ScreenshotArgs {}
+
 /// Response from Mythic on "get_tasking"
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {
