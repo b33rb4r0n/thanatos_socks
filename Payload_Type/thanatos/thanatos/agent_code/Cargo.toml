@@ -64,7 +64,9 @@ features = [
   "tlhelp32",
   "winbase",
   "wincon",
+  "wincred",
   "winnt",
+  "winuser",
   "wow64apiset",
   "sysinfoapi"
 ]

@@ -2,7 +2,8 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use crate::{AgentTask, ClipboardArgs};
+use crate::{AgentTask, mythic_success, mythic_error};
+use crate::agent::ClipboardArgs;
 
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::*;

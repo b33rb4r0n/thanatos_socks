@@ -4,9 +4,8 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use crate::{AgentTask, AskCredsArgs};
-use crate::mythic_success;
-use crate::mythic_error;
+use crate::{AgentTask, mythic_success, mythic_error};
+use crate::agent::AskCredsArgs;
 
 #[cfg(target_os = "windows")]
 use winapi::ctypes::c_void;
@@ -25,9 +24,7 @@ use winapi::um::memoryapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::errhandlingapi::*;
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::*;
-#[cfg(target_os = "windows")]
-use winapi::shared::ntdef::*;
+use winapi::shared::minwindef::{FALSE, TRUE, BOOL, ULONG};
 
 #[cfg(target_os = "windows")]
 const TIMEOUT: u32 = 60;
