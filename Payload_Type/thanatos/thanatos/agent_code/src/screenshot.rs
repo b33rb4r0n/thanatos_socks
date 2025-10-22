@@ -135,10 +135,30 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     );
     ReleaseDC(ptr::null_mut(), hdc);
 
-    // Write BMP to file
+    // Write BMP to file manually without bytemuck
     let mut file = File::create(path)?;
-    file.write_all(bytemuck::bytes_of(&bmp_file_header))?;
-    file.write_all(bytemuck::bytes_of(&bmp_info_header))?;
+    
+    // Write BITMAPFILEHEADER
+    file.write_all(&bmp_file_header.bfType.to_le_bytes())?;
+    file.write_all(&bmp_file_header.bfSize.to_le_bytes())?;
+    file.write_all(&bmp_file_header.bfReserved1.to_le_bytes())?;
+    file.write_all(&bmp_file_header.bfReserved2.to_le_bytes())?;
+    file.write_all(&bmp_file_header.bfOffBits.to_le_bytes())?;
+    
+    // Write BITMAPINFOHEADER
+    file.write_all(&bmp_info_header.biSize.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biWidth.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biHeight.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biPlanes.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biBitCount.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biCompression.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biSizeImage.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biXPelsPerMeter.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biYPelsPerMeter.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biClrUsed.to_le_bytes())?;
+    file.write_all(&bmp_info_header.biClrImportant.to_le_bytes())?;
+    
+    // Write pixel data
     file.write_all(&buffer)?;
     Ok(())
 }
