@@ -38,6 +38,10 @@ struct SshAgentArgs {
     disconnect: bool,
 }
 
+/// Struct containing the clipboard args from Mythic
+#[derive(Debug, Deserialize)]
+pub struct ClipboardArgs {}
+
 /// Response from Mythic on "get_tasking"
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetTaskingResponse {

