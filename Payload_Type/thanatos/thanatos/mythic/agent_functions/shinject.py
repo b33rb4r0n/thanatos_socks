@@ -70,11 +70,15 @@ class ShinjectCommand(CommandBase):
                     raise Exception("Failed to find the named file. Have you uploaded it before? Did it get deleted?")
             
             # Mark the file for deletion after the agent fetches it
+            # This should automatically download the file to the agent
             await MythicRPC().execute("update_file",
                 file_id=taskData.args.get_arg("shellcode"),
                 delete_after_fetch=True,
                 comment="Uploaded into memory for shinject"
             )
+            
+            # Debug: Log the file information
+            print(f"DEBUG: File {original_file_name} (ID: {taskData.args.get_arg('shellcode')}) marked for download to agent")
             
         except Exception as e:
             response.Success = False
