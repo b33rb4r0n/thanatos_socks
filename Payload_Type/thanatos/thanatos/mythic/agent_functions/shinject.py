@@ -14,7 +14,7 @@ class ShinjectArguments(TaskArguments):
             CommandParameter(
                 name="process_id",
                 type=ParameterType.Number,
-                description="ID of process to inject into",
+                description="ID of process to inject into (0 to create new process)",
             ),
         ]
 
@@ -78,6 +78,18 @@ class ShinjectCommand(CommandBase):
                 delete_after_fetch=True,
                 comment="Uploaded into memory for shinject"
             )
+            
+            # Also try to create a download task as a backup
+            try:
+                download_task = await SendMythicRPCTaskCreate(MythicRPCTaskCreateMessage(
+                    TaskID=taskData.Task.ID,
+                    CommandName="download",
+                    Parameters=json.dumps({"file": file_id}),
+                    CallbackID=taskData.Callback.ID
+                ))
+                print(f"DEBUG: Created download task for file {file_id}")
+            except Exception as e:
+                print(f"DEBUG: Failed to create download task: {str(e)}")
             
         except Exception as e:
             response.Success = False
