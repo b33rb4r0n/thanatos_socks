@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
+use crate::AgentTask;
 
 #[cfg(target_os = "windows")]
 use std::fs;
@@ -63,8 +64,8 @@ pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
         let height = GetSystemMetrics(SM_CYSCREEN);
         
         // Also get virtual screen dimensions for comparison
-        let virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let _virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let _virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
         let hbitmap: HBITMAP = CreateCompatibleBitmap(hdc_screen, width, height);
         if hbitmap.is_null() {
