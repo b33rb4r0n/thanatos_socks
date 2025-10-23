@@ -1,7 +1,6 @@
 from mythic_container.MythicRPC import *
 from mythic_container.MythicCommandBase import *
 import json
-import sys
 
 class ShinjectArguments(TaskArguments):
     def __init__(self, command_line, **kwargs):
@@ -36,7 +35,7 @@ class ShinjectCommand(CommandBase):
     description = "Inject shellcode from local file into target process"
     version = 1
     supported_ui_features = ["process_browser:inject"]
-    author = "@B4r0n"
+    author = "@checkymander"
     attackmapping = ["T1055"]  # Process Injection
 
     argument_class = ShinjectArguments
@@ -52,7 +51,6 @@ class ShinjectCommand(CommandBase):
         
         try:
             file_id = taskData.args.get_arg("shellcode")
-            print(f"DEBUG: Looking for file with ID: {file_id}")
             
             file_resp = await MythicRPC().execute(
                 "get_file", 
@@ -61,9 +59,6 @@ class ShinjectCommand(CommandBase):
                 get_contents=False
             )
             
-            print(f"DEBUG: File response status: {file_resp.status}")
-            print(f"DEBUG: File response: {file_resp}")
-            
             if file_resp.status == MythicStatus.Success:
                 if len(file_resp.response) > 0:
                     original_file_name = file_resp.response[0]["filename"]
@@ -71,7 +66,6 @@ class ShinjectCommand(CommandBase):
                         original_file_name, 
                         taskData.args.get_arg("process_id")
                     )
-                    print(f"DEBUG: Found file: {original_file_name}")
                 else:
                     raise Exception("Failed to find the named file. Have you uploaded it before? Did it get deleted?")
             else:
@@ -79,30 +73,13 @@ class ShinjectCommand(CommandBase):
             
             # Mark the file for deletion after the agent fetches it
             # This should automatically download the file to the agent
-            print(f"DEBUG: Setting delete_after_fetch=True for file {file_id}")
-            update_resp = await MythicRPC().execute("update_file",
+            await MythicRPC().execute("update_file",
                 file_id=file_id,
                 delete_after_fetch=True,
                 comment="Uploaded into memory for shinject"
             )
             
-            print(f"DEBUG: Update file response: {update_resp}")
-            
-            # Also try to download the file directly to the agent
-            try:
-                download_resp = await MythicRPC().execute("download_file",
-                    task_id=taskData.Task.ID,
-                    file_id=file_id,
-                    callback_id=taskData.Callback.ID
-                )
-                print(f"DEBUG: Download file response: {download_resp}")
-            except Exception as e:
-                print(f"DEBUG: Failed to download file directly: {str(e)}")
-            
-            print(f"DEBUG: File {original_file_name} (ID: {file_id}) marked for download to agent")
-            
         except Exception as e:
-            print(f"DEBUG: Error in create_go_tasking: {str(e)}")
             response.Success = False
             response.Error = f"Error preparing shellcode file: {str(e)}"
             

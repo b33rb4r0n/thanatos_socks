@@ -1,12 +1,8 @@
 from mythic_container.MythicCommandBase import *
-from uuid import uuid4
-import json
-from os import path
 from mythic_container.MythicRPC import *
-import base64
+import json
 
 class ScreenshotArguments(TaskArguments):
-
     def __init__(self, command_line, **kwargs):
         super().__init__(command_line, **kwargs)
         self.args = []
@@ -20,17 +16,21 @@ class ScreenshotCommand(CommandBase):
     needs_admin = False
     help_cmd = "screenshot"
     description = "Take a screenshot of the current desktop."
-    version = 2
-    author = "@reznok, @djhohnstein"
+    version = 1
+    author = "@checkymander"
     argument_class = ScreenshotArguments
-    browser_script = BrowserScript(script_name="screenshot", author="@djhohnstein", for_new_ui=True)
-    attackmapping = ["T1113"]
+    browser_script = BrowserScript(script_name="screenshot", author="@checkymander", for_new_ui=True)
+    attackmapping = ["T1113"]  # Screen Capture
+    attributes = CommandAttributes(
+        supported_os=[SupportedOS.Windows]  # Windows only for this implementation
+    )
 
     async def create_go_tasking(self, taskData: PTTaskMessageAllData) -> PTTaskCreateTaskingMessageResponse:
         response = PTTaskCreateTaskingMessageResponse(
             TaskID=taskData.Task.ID,
             Success=True,
         )
+        response.DisplayParams = "Taking screenshot of desktop"
         return response
 
     async def process_response(self, task: PTTaskMessageAllData, response: any) -> PTTaskProcessResponseMessageResponse:
@@ -67,17 +67,17 @@ class ScreenshotCommand(CommandBase):
                             if download_task.Success:
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                     TaskID=task.Task.ID,
-                                    Response=f"Screenshot saved to: {file_path}\n\nAutomatically creating download task to upload screenshot to Mythic...".encode()
+                                    Response=f"Screenshot captured successfully!\n\nAutomatically creating download task to upload screenshot to Mythic...".encode()
                                 ))
                             else:
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                     TaskID=task.Task.ID,
-                                    Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
+                                    Response=response_text.encode()
                                 ))
                         except Exception as e:
                             await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                 TaskID=task.Task.ID,
-                                Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
+                                Response=response_text.encode()
                             ))
                     else:
                         await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(

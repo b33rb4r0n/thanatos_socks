@@ -30,7 +30,7 @@ mod setenv;
 mod shell;
 mod shinject;
 mod sleep;
-mod socks;  // ← AGREGA ESTA LÍNEA
+mod socks;  
 mod ssh;
 mod tasking;
 mod unsetenv;
