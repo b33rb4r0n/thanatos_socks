@@ -95,14 +95,16 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
         return Ok(mythic_error!(
             task.id,
             format!(
-                "Shellcode file '{}' not found.\n\nDEBUG INFO:\n- File ID: {}\n- Searched locations:\n{}\n\nTROUBLESHOOTING:\n1. Make sure the file was uploaded to Mythic\n2. Check that delete_after_fetch=True is working\n3. Verify the agent can access the file locations\n4. Try uploading the file again",
+                "Shellcode file '{}' not found.\n\nDEBUG INFO:\n- File ID: {}\n- Current working directory: {}\n- Searched locations:\n{}\n\nTROUBLESHOOTING:\n1. The file should be automatically downloaded by Mythic when delete_after_fetch=True\n2. Try running 'download {}' first to manually download the file\n3. Check Mythic server logs for file download errors\n4. Verify the file exists in Mythic and is accessible",
                 args.shellcode,
                 args.shellcode,
+                std::env::current_dir()?.to_string_lossy(),
                 possible_paths.iter()
                     .enumerate()
                     .map(|(i, path)| format!("  {}. {} (exists: {})", i + 1, path.to_string_lossy(), path.exists()))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n"),
+                args.shellcode
             )
         ));
     }

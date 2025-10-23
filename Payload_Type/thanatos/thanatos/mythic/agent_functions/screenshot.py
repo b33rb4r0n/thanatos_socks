@@ -34,5 +34,53 @@ class ScreenshotCommand(CommandBase):
         return response
 
     async def process_response(self, task: PTTaskMessageAllData, response: any) -> PTTaskProcessResponseMessageResponse:
+        """
+        Process the agent response from screenshot command
+        """
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
+        
+        try:
+            if response:
+                response_text = str(response)
+                
+                # The agent returns a file path, we need to create a download task for it
+                if "To download to Mythic, use:" in response_text:
+                    # Extract the file path from the response
+                    lines = response_text.split('\n')
+                    file_path = None
+                    for line in lines:
+                        if line.strip().startswith('download '):
+                            file_path = line.strip().replace('download ', '')
+                            break
+                    
+                    if file_path:
+                        # Create a download task for the screenshot
+                        await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                            TaskID=task.Task.ID,
+                            Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
+                        ))
+                    else:
+                        await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                            TaskID=task.Task.ID,
+                            Response=response_text.encode()
+                        ))
+                else:
+                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                        TaskID=task.Task.ID,
+                        Response=response_text.encode()
+                    ))
+            else:
+                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                    TaskID=task.Task.ID,
+                    Response="No response received from agent".encode()
+                ))
+                
+        except Exception as e:
+            await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                TaskID=task.Task.ID,
+                Response=f"Error processing screenshot response: {str(e)}".encode()
+            ))
+            resp.Success = False
+            resp.Error = str(e)
+            
         return resp

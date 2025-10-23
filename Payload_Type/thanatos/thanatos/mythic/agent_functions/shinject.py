@@ -51,36 +51,46 @@ class ShinjectCommand(CommandBase):
         )
         
         try:
+            file_id = taskData.args.get_arg("shellcode")
+            print(f"DEBUG: Looking for file with ID: {file_id}")
+            
             file_resp = await MythicRPC().execute(
                 "get_file", 
                 task_id=taskData.Task.ID,
-                file_id=taskData.args.get_arg("shellcode"),
+                file_id=file_id,
                 get_contents=False
             )
             
+            print(f"DEBUG: File response status: {file_resp.status}")
+            print(f"DEBUG: File response: {file_resp}")
+            
             if file_resp.status == MythicStatus.Success:
-                original_file_name = file_resp.response[0]["filename"]
-                
                 if len(file_resp.response) > 0:
+                    original_file_name = file_resp.response[0]["filename"]
                     response.DisplayParams = "Injecting {} into PID {}".format(
                         original_file_name, 
                         taskData.args.get_arg("process_id")
                     )
+                    print(f"DEBUG: Found file: {original_file_name}")
                 else:
                     raise Exception("Failed to find the named file. Have you uploaded it before? Did it get deleted?")
+            else:
+                raise Exception(f"Failed to get file information: {file_resp.error}")
             
             # Mark the file for deletion after the agent fetches it
             # This should automatically download the file to the agent
-            await MythicRPC().execute("update_file",
-                file_id=taskData.args.get_arg("shellcode"),
+            print(f"DEBUG: Setting delete_after_fetch=True for file {file_id}")
+            update_resp = await MythicRPC().execute("update_file",
+                file_id=file_id,
                 delete_after_fetch=True,
                 comment="Uploaded into memory for shinject"
             )
             
-            # Debug: Log the file information
-            print(f"DEBUG: File {original_file_name} (ID: {taskData.args.get_arg('shellcode')}) marked for download to agent")
+            print(f"DEBUG: Update file response: {update_resp}")
+            print(f"DEBUG: File {original_file_name} (ID: {file_id}) marked for download to agent")
             
         except Exception as e:
+            print(f"DEBUG: Error in create_go_tasking: {str(e)}")
             response.Success = False
             response.Error = f"Error preparing shellcode file: {str(e)}"
             
