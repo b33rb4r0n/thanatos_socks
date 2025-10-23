@@ -1,16 +1,13 @@
 use std::mem;
 use std::ptr;
-use serde::{Deserialize, Serialize};
 use crate::{AgentTask, mythic_success, mythic_error};
 use crate::agent::ShinjectArgs;
 use base64::{Engine as _, engine::general_purpose};
 
 #[cfg(target_os = "windows")]
-use winapi::shared::minwindef::{FALSE, TRUE, DWORD, LPVOID};
+use winapi::shared::minwindef::{FALSE, DWORD, LPVOID};
 #[cfg(target_os = "windows")]
 use winapi::shared::basetsd::SIZE_T;
-#[cfg(target_os = "windows")]
-use winapi::um::winnt::*;
 #[cfg(target_os = "windows")]
 use winapi::um::processthreadsapi::*;
 #[cfg(target_os = "windows")]

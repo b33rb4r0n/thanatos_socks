@@ -1,13 +1,10 @@
-use crate::{AgentTask, mythic_success, mythic_error};
-use crate::agent::ScreenshotArgs;
+use crate::{AgentTask, mythic_success};
 use base64::{Engine as _, engine::general_purpose};
 use std::error::Error;
 use std::result::Result;
 
 #[cfg(target_os = "windows")]
 use std::{fs, ptr};
-#[cfg(target_os = "windows")]
-use winapi::shared::minwindef::{DWORD, UINT};
 #[cfg(target_os = "windows")]
 use winapi::shared::windef::{HBITMAP, HDC, HWND};
 #[cfg(target_os = "windows")]
