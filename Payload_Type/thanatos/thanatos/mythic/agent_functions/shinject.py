@@ -1,5 +1,5 @@
-from mythic_container.MythicRPC import *
 from mythic_container.MythicCommandBase import *
+from mythic_container.MythicRPC import *
 import json
 
 class ShinjectArguments(TaskArguments):
@@ -7,38 +7,48 @@ class ShinjectArguments(TaskArguments):
         super().__init__(command_line, **kwargs)
         self.args = [
             CommandParameter(
-                name="shellcode", 
-                type=ParameterType.File, 
-                description="Shellcode to inject"
-            ),
-            CommandParameter(
-                name="process_id",
+                name="pid",
+                cli_name="PID",
+                display_name="PID",
                 type=ParameterType.Number,
-                description="ID of process to inject into (0 to create new process)",
-            ),
+                description="Process ID to inject into.",
+                parameter_group_info=[
+                    ParameterGroupInfo(
+                        required=True,
+                        group_name="Default"
+                    ),
+                ]),
+            CommandParameter(
+                name="shellcode",
+                cli_name="Shellcode",
+                display_name="Shellcode File",
+                type=ParameterType.File,
+                description="Shellcode file to inject",
+                parameter_group_info=[
+                    ParameterGroupInfo(
+                        required=True,
+                        group_name="Default"
+                    ),
+                ]),
         ]
 
     async def parse_arguments(self):
-        if len(self.command_line) > 0:
-            if self.command_line[0] == "{":
-                self.load_args_from_json_string(self.command_line)
-            else:
-                raise ValueError("Missing JSON arguments")
-        else:
-            raise ValueError("Missing arguments")
+        if len(self.command_line) == 0:
+            raise Exception("No arguments given.\n\tUsage: {}".format(ShinjectCommand.help_cmd))
+        if self.command_line[0] != "{":
+            raise Exception("Require JSON blob, but got raw command line.\n\tUsage: {}".format(ShinjectCommand.help_cmd))
+        self.load_args_from_json_string(self.command_line)
 
 
 class ShinjectCommand(CommandBase):
     cmd = "shinject"
     needs_admin = False
-    help_cmd = "shinject"
-    description = "Inject shellcode from local file into target process"
+    help_cmd = "shinject (modal popup)"
+    description = "Inject shellcode into a remote process."
     version = 1
-    supported_ui_features = ["process_browser:inject"]
     author = "@checkymander"
-    attackmapping = ["T1055"]  # Process Injection
-
     argument_class = ShinjectArguments
+    attackmapping = ["T1055"]  # Process Injection
     attributes = CommandAttributes(
         supported_os=[SupportedOS.Windows]  # Windows only for this implementation
     )
@@ -50,50 +60,47 @@ class ShinjectCommand(CommandBase):
         )
         
         try:
-            file_id = taskData.args.get_arg("shellcode")
+            # Get file information from Mythic
+            file_resp = await SendMythicRPCFileSearch(MythicRPCFileSearchMessage(
+                AgentFileID=taskData.args.get_arg("shellcode"),
+                TaskID=taskData.Task.ID,
+            ))
             
-            file_resp = await MythicRPC().execute(
-                "get_file", 
-                task_id=taskData.Task.ID,
-                file_id=file_id,
-                get_contents=False
-            )
-            
-            if file_resp.status == MythicStatus.Success:
-                if len(file_resp.response) > 0:
-                    original_file_name = file_resp.response[0]["filename"]
-                    response.DisplayParams = "Injecting {} into PID {}".format(
+            if file_resp.Success:
+                if len(file_resp.Files) > 0:
+                    original_file_name = file_resp.Files[0].Filename
+                    file_size = file_resp.Files[0].Size
+                    
+                    response.DisplayParams = "Injecting {} ({} bytes) into PID {}".format(
                         original_file_name, 
-                        taskData.args.get_arg("process_id")
+                        file_size,
+                        taskData.args.get_arg("pid")
                     )
+                    
+                    # Replace the shellcode parameter with the file ID that the agent expects
+                    # The Rust agent looks for "shellcode-file-id" parameter
+                    taskData.args.add_arg("shellcode-file-id", file_resp.Files[0].AgentFileId)
+                    taskData.args.remove_arg("shellcode")
+                    
+                    # Set the file to be deleted after the agent fetches it
+                    # This triggers Mythic's automatic file download to the agent
+                    await SendMythicRPCFileUpdate(MythicRPCFileUpdateMessage(
+                        AgentFileId=file_resp.Files[0].AgentFileId,
+                        DeleteAfterFetch=True,
+                        Comment="Shellcode for injection into process {}".format(taskData.args.get_arg("pid"))
+                    ))
+                    
+                    print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {file_resp.Files[0].AgentFileId}) for injection into PID {taskData.args.get_arg('pid')}")
+                    
                 else:
-                    raise Exception("Failed to find the named file. Have you uploaded it before? Did it get deleted?")
+                    raise Exception("Failed to fetch uploaded file from Mythic (ID: {})".format(taskData.args.get_arg("shellcode")))
             else:
-                raise Exception(f"Failed to get file information: {file_resp.error}")
-            
-            # Mark the file for deletion after the agent fetches it
-            # This should automatically download the file to the agent
-            await MythicRPC().execute("update_file",
-                file_id=file_id,
-                delete_after_fetch=True,
-                comment="Uploaded into memory for shinject"
-            )
-            
-            # Also try to create a download task as a backup
-            try:
-                download_task = await SendMythicRPCTaskCreate(MythicRPCTaskCreateMessage(
-                    TaskID=taskData.Task.ID,
-                    CommandName="download",
-                    Parameters=json.dumps({"file": file_id}),
-                    CallbackID=taskData.Callback.ID
-                ))
-                print(f"DEBUG: Created download task for file {file_id}")
-            except Exception as e:
-                print(f"DEBUG: Failed to create download task: {str(e)}")
-            
+                raise Exception("Failed to search for file: {}".format(file_resp.Error))
+                
         except Exception as e:
             response.Success = False
-            response.Error = f"Error preparing shellcode file: {str(e)}"
+            response.Error = "Error preparing shellcode file: {}".format(str(e))
+            print(f"DEBUG: Error in create_go_tasking: {str(e)}")
             
         return response
 
@@ -105,7 +112,11 @@ class ShinjectCommand(CommandBase):
         
         try:
             if response:
-                response_text = str(response)
+                # Convert response to string if it's not already
+                if hasattr(response, 'decode'):
+                    response_text = response.decode('utf-8')
+                else:
+                    response_text = str(response)
                 
                 # Create a task response output
                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
@@ -119,13 +130,20 @@ class ShinjectCommand(CommandBase):
                     Response=response_text
                 ))
                 
-                # Log successful injection
-                if "successfully" in response_text.lower():
+                # Log successful injection for operation events
+                if "injected" in response_text.lower() and "failed" not in response_text.lower():
                     await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
                         TaskID=task.Task.ID,
-                        Message=f"Successfully injected shellcode into PID {task.args.get_arg('process_id')}",
+                        Message="Successfully injected shellcode into PID {}".format(task.args.get_arg("pid")),
                         Level="info"
                     ))
+                    
+                    # Also log to task for better visibility
+                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                        TaskID=task.Task.ID,
+                        Response="✅ Shellcode injection completed successfully".encode()
+                    ))
+                    
             else:
                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                     TaskID=task.Task.ID,
@@ -133,11 +151,12 @@ class ShinjectCommand(CommandBase):
                 ))
                 
         except Exception as e:
+            error_msg = "Error processing shinject response: {}".format(str(e))
             await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                 TaskID=task.Task.ID,
-                Response=f"Error processing shinject response: {str(e)}".encode()
+                Response=error_msg.encode()
             ))
             resp.Success = False
-            resp.Error = str(e)
+            resp.Error = error_msg
             
         return resp

