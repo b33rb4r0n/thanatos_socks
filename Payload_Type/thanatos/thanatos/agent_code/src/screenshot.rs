@@ -1,5 +1,4 @@
 use crate::{AgentTask, mythic_success};
-use base64::{Engine as _, engine::general_purpose};
 use std::error::Error;
 use std::result::Result;
 

