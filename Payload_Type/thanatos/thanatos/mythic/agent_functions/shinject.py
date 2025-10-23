@@ -87,6 +87,18 @@ class ShinjectCommand(CommandBase):
             )
             
             print(f"DEBUG: Update file response: {update_resp}")
+            
+            # Also try to download the file directly to the agent
+            try:
+                download_resp = await MythicRPC().execute("download_file",
+                    task_id=taskData.Task.ID,
+                    file_id=file_id,
+                    callback_id=taskData.Callback.ID
+                )
+                print(f"DEBUG: Download file response: {download_resp}")
+            except Exception as e:
+                print(f"DEBUG: Failed to download file directly: {str(e)}")
+            
             print(f"DEBUG: File {original_file_name} (ID: {file_id}) marked for download to agent")
             
         except Exception as e:

