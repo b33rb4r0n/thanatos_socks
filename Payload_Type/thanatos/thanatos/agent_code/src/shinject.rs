@@ -74,7 +74,13 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
     if !found_file {
         return Ok(mythic_error!(
             task.id,
-            format!("Shellcode file '{}' not found. Please ensure the file is uploaded to Mythic and downloaded to the agent first.", args.shellcode)
+            format!(
+                "Shellcode file '{}' not found. \n\nTo use shinject:\n1. Upload your shellcode file to Mythic\n2. Use the file ID from Mythic in the shinject command\n3. The file will be downloaded to the agent automatically\n\nCurrent search locations:\n- {}\n- {}\n- {}", 
+                args.shellcode,
+                std::path::Path::new(&args.shellcode).to_string_lossy(),
+                temp_path.to_string_lossy(),
+                current_path.to_string_lossy()
+            )
         ));
     }
 

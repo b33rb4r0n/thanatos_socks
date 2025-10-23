@@ -66,13 +66,22 @@ fn http_post(url: &str, body: &str) -> Result<String, Box<dyn Error>> {
     }
 
     // Send the post request
-    let res = req.send()?;
+    let res = match req.send() {
+        Ok(response) => response,
+        Err(e) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                format!("Failed to make post request to {}: {}", url, e),
+            )
+            .into());
+        }
+    };
 
     // Check the status code
     if res.status_code != 200 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
-            "Failed to make post request",
+            format!("Failed to make post request to {}: HTTP {} - {}", url, res.status_code, res.reason_phrase),
         )
         .into());
     }
