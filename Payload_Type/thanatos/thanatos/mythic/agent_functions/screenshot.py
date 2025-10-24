@@ -1,5 +1,6 @@
 from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
+import asyncio
 import json
 
 class ScreenshotArguments(TaskArguments):
@@ -90,19 +91,49 @@ class ScreenshotCommand(CommandBase):
                             
                             if download_task.Success:
                                 print(f"DEBUG: Download task created successfully")
-                                print(f"DEBUG: Download task response: {download_task.response}")
-                                # Return a response that the browser script can use
-                                response_data = {
-                                    "file_id": download_task.response.get("file_id", "unknown"),
-                                    "filename": filename,
-                                    "file_size": file_size,
-                                    "message": f"Screenshot captured successfully! File: {filename} ({file_size} bytes)"
-                                }
-                                print(f"DEBUG: Creating response data: {response_data}")
-                                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                                    TaskID=task.Task.ID,
-                                    Response=f"Screenshot captured successfully!\nFile: {filename} ({file_size} bytes)\nDownloading...".encode()
-                                ))
+                                # Try to get the child task id (be robust to field names)
+                                child_task_id = getattr(download_task, 'TaskID', None)
+                                if child_task_id is None and hasattr(download_task, 'task'):
+                                    child_task_id = getattr(download_task.task, 'id', None)
+
+                                # Poll Mythic for the created file so we can return file_id to the browser script
+                                found_file_id = None
+                                for _ in range(10):
+                                    try:
+                                        file_search = await SendMythicRPCFileSearch(MythicRPCFileSearchMessage(
+                                            TaskID=child_task_id
+                                        ))
+                                        if file_search.Success and len(file_search.Files) > 0:
+                                            f = file_search.Files[0]
+                                            # Robustly extract agent_file_id
+                                            found_file_id = (
+                                                getattr(f, 'AgentFileId', None)
+                                                or getattr(f, 'AgentFileID', None)
+                                                or getattr(f, 'agent_file_id', None)
+                                            )
+                                            if found_file_id:
+                                                break
+                                    except Exception as ie:
+                                        print(f"DEBUG: File search polling error: {ie}")
+                                    await asyncio.sleep(1)
+
+                                if found_file_id:
+                                    response_data = {
+                                        "file_id": found_file_id,
+                                        "filename": filename,
+                                        "file_size": file_size,
+                                        "message": f"Screenshot captured successfully! File: {filename} ({file_size} bytes)"
+                                    }
+                                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                                        TaskID=task.Task.ID,
+                                        Response=json.dumps(response_data).encode()
+                                    ))
+                                else:
+                                    # Fallback: indicate download task created; UI will show plaintext
+                                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                                        TaskID=task.Task.ID,
+                                        Response=f"Screenshot captured: {filename} ({file_size} bytes)\nCreated download task; image will appear when complete.".encode()
+                                    ))
                             else:
                                 # Fallback: manual download instructions
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(

