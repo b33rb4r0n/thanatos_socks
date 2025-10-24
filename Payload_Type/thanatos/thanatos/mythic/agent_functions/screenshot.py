@@ -40,9 +40,15 @@ class ScreenshotCommand(CommandBase):
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
         
         try:
-            if response:
+            # FIX: Handle both string and JSON responses from agent
+            if isinstance(response, dict) and "output" in response:
+                # Agent returned JSON format: {"status": "success", "output": "..."}
+                response_text = str(response["output"])
+            else:
+                # Agent returned plain string (our fixed version)
                 response_text = str(response)
-                
+            
+            if response_text:
                 # Check if the response contains our special format for screenshot (Apollo's approach)
                 if response_text.startswith("screenshot_captured:"):
                     # Parse the response: format is "screenshot_captured:file_path:file_size:filename:type"
@@ -75,22 +81,30 @@ class ScreenshotCommand(CommandBase):
                                     Response=json.dumps(response_data).encode()
                                 ))
                             else:
+                                # Fallback: manual download instructions
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                     TaskID=task.Task.ID,
                                     Response=f"Screenshot captured: {filename} ({file_size} bytes)\n\nTo download manually, use: download {file_path}".encode()
                                 ))
                         except Exception as e:
+                            # Fallback on error
                             await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                 TaskID=task.Task.ID,
-                                Response=f"Screenshot captured: {filename} ({file_size} bytes)\n\nTo download manually, use: download {file_path}".encode()
+                                Response=f"Screenshot captured: {filename} ({file_size} bytes)\n\nTo download manually, use: download {file_path}\nError: {str(e)}".encode()
                             ))
                     else:
                         await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                             TaskID=task.Task.ID,
-                            Response="Screenshot captured but failed to parse file information".encode()
+                            Response=f"Screenshot captured but failed to parse file information. Raw response: {response_text}".encode()
                         ))
+                elif response_text.startswith("error:"):
+                    # Handle error responses from agent
+                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                        TaskID=task.Task.ID,
+                        Response=response_text.encode()
+                    ))
                 else:
-                    # Regular response (error or other message)
+                    # Regular response (unexpected format)
                     await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                         TaskID=task.Task.ID,
                         Response=response_text.encode()

