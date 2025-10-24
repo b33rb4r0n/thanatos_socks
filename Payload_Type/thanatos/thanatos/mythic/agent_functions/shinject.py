@@ -111,43 +111,33 @@ class ShinjectCommand(CommandBase):
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
         
         try:
-            if response:
-                # Convert response to string if it's not already
-                if hasattr(response, 'decode'):
-                    response_text = response.decode('utf-8')
-                else:
-                    response_text = str(response)
-                
-                # Create a task response output
-                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                    TaskID=task.Task.ID,
-                    Response=response_text.encode()
-                ))
-                
-                # Also update the task output in the database
-                await SendMythicRPCResponseUpdate(MythicRPCResponseUpdateMessage(
-                    TaskID=task.Task.ID,
-                    Response=response_text
-                ))
-                
-                # Log successful injection for operation events
-                if "injected" in response_text.lower() and "failed" not in response_text.lower():
-                    await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
-                        TaskID=task.Task.ID,
-                        Message="Successfully injected shellcode into PID {}".format(task.args.get_arg("pid")),
-                        Level="info"
-                    ))
-                    
-                    # Also log to task for better visibility
-                    await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
-                        TaskID=task.Task.ID,
-                        Response="✅ Shellcode injection completed successfully".encode()
-                    ))
-                    
+            # FIX: Handle both string and JSON responses
+            if isinstance(response, dict):
+                # JSON response - extract output
+                response_text = response.get("output", str(response))
             else:
-                await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                # Plain string response
+                response_text = str(response)
+            
+            # Create a task response output
+            await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
+                TaskID=task.Task.ID,
+                Response=response_text.encode()
+            ))
+            
+            # Log successful injection for operation events
+            if any(success_word in response_text.lower() for success_word in ["success", "injected", "executed"]) and "fail" not in response_text.lower():
+                await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
                     TaskID=task.Task.ID,
-                    Response="No response received from agent".encode()
+                    Message="Successfully injected shellcode into PID {}".format(task.args.get_arg("pid")),
+                    Level="info"
+                ))
+                
+            elif "error" in response_text.lower() or "fail" in response_text.lower():
+                await SendMythicRPCOperationEventLogCreate(MythicRPCOperationEventLogCreateMessage(
+                    TaskID=task.Task.ID,
+                    Message="Failed to inject shellcode into PID {}: {}".format(task.args.get_arg("pid"), response_text),
+                    Level="warning"
                 ))
                 
         except Exception as e:
