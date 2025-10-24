@@ -68,8 +68,8 @@ class ShinjectCommand(CommandBase):
             
             if file_resp.Success:
                 if len(file_resp.Files) > 0:
-                    original_file_name = file_resp.Files[0].Filename
-                    file_size = file_resp.Files[0].Size
+                    original_file_name = file_resp.Files[0].filename
+                    file_size = file_resp.Files[0].size
                     
                     response.DisplayParams = "Injecting {} ({} bytes) into PID {}".format(
                         original_file_name, 
@@ -79,18 +79,18 @@ class ShinjectCommand(CommandBase):
                     
                     # Replace the shellcode parameter with the file ID that the agent expects
                     # The Rust agent looks for "shellcode-file-id" parameter
-                    taskData.args.add_arg("shellcode-file-id", file_resp.Files[0].AgentFileId)
+                    taskData.args.add_arg("shellcode-file-id", file_resp.Files[0].agent_file_id)
                     taskData.args.remove_arg("shellcode")
                     
                     # Set the file to be deleted after the agent fetches it
                     # This triggers Mythic's automatic file download to the agent
                     await SendMythicRPCFileUpdate(MythicRPCFileUpdateMessage(
-                        AgentFileId=file_resp.Files[0].AgentFileId,
+                        AgentFileId=file_resp.Files[0].agent_file_id,
                         DeleteAfterFetch=True,
                         Comment="Shellcode for injection into process {}".format(taskData.args.get_arg("pid"))
                     ))
                     
-                    print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {file_resp.Files[0].AgentFileId}) for injection into PID {taskData.args.get_arg('pid')}")
+                    print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {file_resp.Files[0].agent_file_id}) for injection into PID {taskData.args.get_arg('pid')}")
                     
                 else:
                     raise Exception("Failed to fetch uploaded file from Mythic (ID: {})".format(taskData.args.get_arg("shellcode")))

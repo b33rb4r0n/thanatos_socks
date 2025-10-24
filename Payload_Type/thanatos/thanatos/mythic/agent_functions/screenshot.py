@@ -40,12 +40,19 @@ class ScreenshotCommand(CommandBase):
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
         
         try:
-            # FIX: Handle both string and JSON responses from agent
-            if isinstance(response, dict) and "output" in response:
-                # Agent returned JSON format: {"status": "success", "output": "..."}
-                response_text = str(response["output"])
+            # Handle both string and JSON responses from agent
+            if isinstance(response, dict):
+                if "user_output" in response:
+                    # Agent returned JSON format from mythic_success!: {"status": "success", "user_output": "..."}
+                    response_text = str(response["user_output"])
+                elif "output" in response:
+                    # Agent returned JSON format: {"status": "success", "output": "..."}
+                    response_text = str(response["output"])
+                else:
+                    # Fallback: convert entire response to string
+                    response_text = str(response)
             else:
-                # Agent returned plain string (our fixed version)
+                # Agent returned plain string
                 response_text = str(response)
             
             if response_text:
