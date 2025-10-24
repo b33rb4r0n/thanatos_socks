@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
+use crate::AgentTask;
 
 #[cfg(target_os = "windows")]
 use std::mem;
@@ -114,7 +115,7 @@ fn process_exists(pid: u32) -> bool {
 
 /// Get shellcode file content - uses Mythic's file transfer system
 #[cfg(target_os = "windows")]
-fn get_shellcode_file(file_id: &str, task_id: &str) -> Result<Vec<u8>, String> {
+fn get_shellcode_file(file_id: &str, _task_id: &str) -> Result<Vec<u8>, String> {
     // Mythic should automatically download the file when delete_after_fetch=True
     // We look for it in common download locations
     

