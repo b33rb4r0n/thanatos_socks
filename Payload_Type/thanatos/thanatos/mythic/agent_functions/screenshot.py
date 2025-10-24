@@ -101,7 +101,7 @@ class ScreenshotCommand(CommandBase):
                                 print(f"DEBUG: Creating response data: {response_data}")
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                     TaskID=task.Task.ID,
-                                    Response=json.dumps(response_data).encode()
+                                    Response=f"Screenshot captured successfully!\nFile: {filename} ({file_size} bytes)\nDownloading...".encode()
                                 ))
                             else:
                                 # Fallback: manual download instructions
@@ -127,7 +127,8 @@ class ScreenshotCommand(CommandBase):
                         Response=response_text.encode()
                     ))
                 else:
-                    # Regular response (unexpected format)
+                    # Regular response (might be the screenshot_captured string shown directly)
+                    print(f"DEBUG: Unexpected response format: {response_text}")
                     await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                         TaskID=task.Task.ID,
                         Response=response_text.encode()

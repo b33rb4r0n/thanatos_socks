@@ -79,7 +79,7 @@ class ShinjectCommand(CommandBase):
             if file_resp.Success:
                 if len(file_resp.Files) > 0:
                     original_file_name = file_resp.Files[0].Filename
-                    file_size = file_resp.Files[0].Size
+                    file_size = file_resp.Files[0].size
                     
                     print(f"DEBUG: Processing file - Name: {original_file_name}, Size: {file_size}, ID: {file_resp.Files[0].AgentFileId}")
                     
