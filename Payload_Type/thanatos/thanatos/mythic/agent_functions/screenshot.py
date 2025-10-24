@@ -52,12 +52,14 @@ class ScreenshotCommand(CommandBase):
                     # Fallback: convert entire response to string
                     response_text = str(response)
             else:
-                # Agent returned plain string
+                # Agent returned plain string (our current format)
                 response_text = str(response)
             
             if response_text:
+                print(f"DEBUG: Processing response_text: {response_text}")
                 # Check if the response contains our special format for screenshot (Apollo's approach)
                 if response_text.startswith("screenshot_captured:"):
+                    print(f"DEBUG: Detected screenshot_captured format")
                     # Parse the response: format is "screenshot_captured:file_path:file_size:filename:type"
                     parts = response_text.split(":")
                     if len(parts) >= 4:
@@ -66,7 +68,9 @@ class ScreenshotCommand(CommandBase):
                         filename = parts[3]
                         file_type = parts[4] if len(parts) > 4 else "screenshot"
                         
-                        # Create a download task for the screenshot automatically (Apollo's approach)
+                        print(f"DEBUG: Parsed screenshot info - Path: {file_path}, Size: {file_size}, Filename: {filename}")
+                        
+                        # Create a download task tree for the screenshot automatically (Apollo's approach)
                         try:
                             download_task = await SendMythicRPCTaskCreate(MythicRPCTaskCreateMessage(
                                 TaskID=task.Task.ID,
@@ -75,7 +79,11 @@ class ScreenshotCommand(CommandBase):
                                 CallbackID=task.Callback.ID
                             ))
                             
+                            print(f"DEBUG: Download task creation result: Success={download_task.Success}")
+                            
                             if download_task.Success:
+                                print(f"DEBUG: Download task created successfully")
+                                print(f"DEBUG: Download task response: {download_task.response}")
                                 # Return a response that the browser script can use
                                 response_data = {
                                     "file_id": download_task.response.get("file_id", "unknown"),
@@ -83,6 +91,7 @@ class ScreenshotCommand(CommandBase):
                                     "file_size": file_size,
                                     "message": f"Screenshot captured successfully! File: {filename} ({file_size} bytes)"
                                 }
+                                print(f"DEBUG: Creating response data: {response_data}")
                                 await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                                     TaskID=task.Task.ID,
                                     Response=json.dumps(response_data).encode()
