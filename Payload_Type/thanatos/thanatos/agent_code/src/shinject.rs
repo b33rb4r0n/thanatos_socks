@@ -281,7 +281,7 @@ unsafe fn inject_shellcode_impl(process_id: u32, shellcode: &[u8]) -> Result<Str
 
     // Get thread exit code to check if it completed
     let mut exit_code: DWORD = 0;
-    let exit_code_result = GetExitCodeThread(h_thread, &mut exit_code);
+    let _exit_code_result = GetExitCodeThread(h_thread, &mut exit_code);
 
     // Clean up handles and memory
     CloseHandle(h_thread);

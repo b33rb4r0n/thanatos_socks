@@ -105,6 +105,38 @@ pub mod whoami {
             GetComputerNameExW(ComputerNameDnsDomain, std::ptr::null_mut(), &mut name_len)
         };
 
+        if name_len == 0 {
+            // Try to get the workgroup name instead
+            let mut workgroup_len = 0;
+            let _ = unsafe {
+                GetComputerNameExW(ComputerNameDnsHostname, std::ptr::null_mut(), &mut workgroup_len)
+            };
+            
+            if workgroup_len == 0 {
+                return Some("WORKGROUP".to_string());
+            }
+            
+            let mut name: Vec<u16> = Vec::with_capacity(workgroup_len.try_into().unwrap_or(usize::MAX));
+            workgroup_len = name.capacity().try_into().unwrap_or(c_ulong::MAX);
+
+            let ret = unsafe {
+                let ret = GetComputerNameExW(ComputerNameDnsHostname, name.as_mut_ptr(), &mut workgroup_len);
+                name.set_len(workgroup_len.try_into().unwrap_or(usize::MAX));
+                ret
+            };
+
+            if ret == 0 {
+                return Some("WORKGROUP".to_string());
+            }
+
+            let hostname = std::ffi::OsString::from_wide(&name)
+                .to_string_lossy()
+                .to_string();
+            
+            // If we can't get the domain, return WORKGROUP as default
+            return Some("WORKGROUP".to_string());
+        }
+
         let mut name: Vec<u16> = Vec::with_capacity(name_len.try_into().unwrap_or(usize::MAX));
         name_len = name.capacity().try_into().unwrap_or(c_ulong::MAX);
 
@@ -116,15 +148,19 @@ pub mod whoami {
         };
 
         if ret == 0 {
-            return None;
+            return Some("WORKGROUP".to_string());
         };
 
-        // Return the domain name as a String
-        Some(
-            std::ffi::OsString::from_wide(&name)
-                .to_string_lossy()
-                .to_string(),
-        )
+        let domain_name = std::ffi::OsString::from_wide(&name)
+            .to_string_lossy()
+            .to_string();
+        
+        // If the domain name is empty, return WORKGROUP as default
+        if domain_name.is_empty() {
+            Some("WORKGROUP".to_string())
+        } else {
+            Some(domain_name)
+        }
     }
 
     /// Get the integrity level
@@ -285,7 +321,7 @@ pub fn get_checkin_info() -> String {
         pid: std::process::id(),
         uuid: crate::payloadvars::payload_uuid(),
         architecture: std::env::consts::ARCH.to_string(),
-        domain: whoami::domain(),
+        domain: domain(),
         integrity_level: whoami::get_integrity_level(),
     };
 

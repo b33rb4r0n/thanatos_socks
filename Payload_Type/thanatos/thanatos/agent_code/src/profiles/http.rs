@@ -76,7 +76,7 @@ fn http_post(url: &str, body: &str) -> Result<String, Box<dyn Error>> {
         attempts += 1;
         eprintln!("DEBUG: HTTP request attempt {} to {}", attempts, url);
         
-        let res = match req.send() {
+        let res = match req.clone().send() {
             Ok(response) => {
                 eprintln!("DEBUG: HTTP request successful, status: {}", response.status_code);
                 response
