@@ -6,7 +6,7 @@ use crate::AgentTask;
 #[cfg(target_os = "windows")]
 use std::ptr;
 #[cfg(target_os = "windows")]
-use winapi::shared::windef::{HBITMAP, HDC, HMONITOR, RECT};
+use winapi::shared::windef::HBITMAP;
 #[cfg(target_os = "windows")]
 use winapi::um::wingdi::*;
 #[cfg(target_os = "windows")]
@@ -56,7 +56,7 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
 
 /// Take screenshots using Apollo's method - save locally and return file path for download
 #[cfg(target_os = "windows")]
-pub fn execute_screenshot(_args: ScreenshotArgs, task_id: &str) -> Result<String, String> {
+pub fn execute_screenshot(_args: ScreenshotArgs, _task_id: &str) -> Result<String, String> {
     unsafe {
         // Capture primary screen (Apollo's approach)
         let width = GetSystemMetrics(SM_CXSCREEN);
@@ -156,7 +156,7 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, file_pa
     let mut pixel_data = vec![0u8; image_size as usize];
     let hdc = GetDC(ptr::null_mut());
     
-    let bmp_info = BITMAPINFO {
+    let mut bmp_info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: 40,
             biWidth: width as i32,
@@ -184,7 +184,7 @@ unsafe fn save_bitmap_to_file(hbitmap: HBITMAP, width: u32, height: u32, file_pa
         0,
         height,
         pixel_data.as_mut_ptr() as *mut _,
-        &bmp_info,
+        &mut bmp_info,
         DIB_RGB_COLORS,
     );
     
