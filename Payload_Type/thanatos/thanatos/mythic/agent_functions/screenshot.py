@@ -40,20 +40,27 @@ class ScreenshotCommand(CommandBase):
         resp = PTTaskProcessResponseMessageResponse(TaskID=task.Task.ID, Success=True)
         
         try:
+            print(f"DEBUG: Screenshot response type: {type(response)}")
+            print(f"DEBUG: Screenshot response content: {response}")
+            
             # Handle both string and JSON responses from agent
             if isinstance(response, dict):
                 if "user_output" in response:
                     # Agent returned JSON format from mythic_success!: {"status": "success", "user_output": "..."}
                     response_text = str(response["user_output"])
+                    print(f"DEBUG: Extracted user_output: {response_text}")
                 elif "output" in response:
                     # Agent returned JSON format: {"status": "success", "output": "..."}
                     response_text = str(response["output"])
+                    print(f"DEBUG: Extracted output: {response_text}")
                 else:
                     # Fallback: convert entire response to string
                     response_text = str(response)
+                    print(f"DEBUG: Using entire response as string: {response_text}")
             else:
                 # Agent returned plain string (our current format)
                 response_text = str(response)
+                print(f"DEBUG: Using plain string response: {response_text}")
             
             if response_text:
                 print(f"DEBUG: Processing response_text: {response_text}")
