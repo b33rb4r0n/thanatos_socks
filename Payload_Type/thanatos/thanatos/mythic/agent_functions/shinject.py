@@ -78,10 +78,38 @@ class ShinjectCommand(CommandBase):
             
             if file_resp.Success:
                 if len(file_resp.Files) > 0:
-                    original_file_name = file_resp.Files[0].Filename
-                    file_size = file_resp.Files[0].size
+                    # Debug: Print all available attributes on the FileData object
+                    file_data = file_resp.Files[0]
+                    print(f"DEBUG: FileData object attributes: {dir(file_data)}")
                     
-                    print(f"DEBUG: Processing file - Name: {original_file_name}, Size: {file_size}, ID: {file_resp.Files[0].AgentFileId}")
+                    # Try to get the filename using different possible attribute names
+                    original_file_name = None
+                    if hasattr(file_data, 'Filename'):
+                        original_file_name = file_data.Filename
+                    elif hasattr(file_data, 'filename'):
+                        original_file_name = file_data.filename
+                    elif hasattr(file_data, 'name'):
+                        original_file_name = file_data.name
+                    
+                    # Try to get the file size using different possible attribute names
+                    file_size = None
+                    if hasattr(file_data, 'Size'):
+                        file_size = file_data.Size
+                    elif hasattr(file_data, 'size'):
+                        file_size = file_data.size
+                    elif hasattr(file_data, 'file_size'):
+                        file_size = file_data.file_size
+                    
+                    # Try to get the agent file ID using different possible attribute names
+                    agent_file_id = None
+                    if hasattr(file_data, 'AgentFileId'):
+                        agent_file_id = file_data.AgentFileId
+                    elif hasattr(file_data, 'agent_file_id'):
+                        agent_file_id = file_data.agent_file_id
+                    elif hasattr(file_data, 'id'):
+                        agent_file_id = file_data.id
+                    
+                    print(f"DEBUG: Processing file - Name: {original_file_name}, Size: {file_size}, ID: {agent_file_id}")
                     
                     response.DisplayParams = "Injecting {} ({} bytes) into PID {}".format(
                         original_file_name, 
@@ -91,20 +119,20 @@ class ShinjectCommand(CommandBase):
                     
                     # Replace the shellcode parameter with the file ID that the agent expects
                     # The Rust agent looks for "shellcode-file-id" parameter
-                    print(f"DEBUG: Adding shellcode-file-id parameter: {file_resp.Files[0].AgentFileId}")
-                    taskData.args.add_arg("shellcode-file-id", file_resp.Files[0].AgentFileId)
+                    print(f"DEBUG: Adding shellcode-file-id parameter: {agent_file_id}")
+                    taskData.args.add_arg("shellcode-file-id", agent_file_id)
                     taskData.args.remove_arg("shellcode")
                     
                     # Set the file to be deleted after the agent fetches it
                     # This triggers Mythic's automatic file download to the agent
                     print(f"DEBUG: Setting file to be deleted after fetch")
                     await SendMythicRPCFileUpdate(MythicRPCFileUpdateMessage(
-                        AgentFileId=file_resp.Files[0].AgentFileId,
+                        AgentFileId=agent_file_id,
                         DeleteAfterFetch=True,
                         Comment="Shellcode for injection into process {}".format(taskData.args.get_arg("pid"))
                     ))
                     
-                    print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {file_resp.Files[0].AgentFileId}) for injection into PID {taskData.args.get_arg('pid')}")
+                    print(f"DEBUG: Prepared shellcode file {original_file_name} (ID: {agent_file_id}) for injection into PID {taskData.args.get_arg('pid')}")
                     print(f"DEBUG: Task parameters after processing: {taskData.args}")
                     
                 else:
