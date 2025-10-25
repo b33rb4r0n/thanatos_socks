@@ -216,8 +216,8 @@ class ScreenshotCommand(CommandBase):
                     TaskID=task.Task.ID,
                     Response="No response received from agent".encode()
                 ))
-                
-        except Exception as e:
+                    
+            except Exception as e:
             await SendMythicRPCResponseCreate(MythicRPCResponseCreateMessage(
                 TaskID=task.Task.ID,
                 Response=f"Error processing screenshot response: {str(e)}".encode()
